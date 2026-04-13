@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="IoTron Logo" width="400" />
+</p>
+
 # IoTron
 
 IoTron is an open-source IoT framework for building device-to-cloud workflows across embedded boards and edge systems. The repository includes a Python control plane, a FastAPI backend, a browser operations console, production-oriented flashing and OTA workflows, a native runtime execution layer in `core/`, and Python/Go integration surfaces.
