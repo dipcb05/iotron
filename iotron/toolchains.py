@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from .catalog import list_boards
 
@@ -83,14 +88,17 @@ def build_flash_plan(
     artifact: str,
     port: str | None = None,
     fqbn: str | None = None,
+    rollout: dict[str, Any] | None = None,
+    rollback_artifact: str | None = None,
 ) -> dict[str, Any]:
     spec = resolve_toolchain(board)
     executable = resolve_executable(spec.executable_candidates)
-    artifact_path = str(Path(artifact))
+    artifact_path = Path(artifact)
+    validation = validate_artifact(artifact_path)
 
     if spec.name == "arduino-cli":
         effective_fqbn = fqbn or infer_fqbn(board)
-        command = [executable or spec.executable_candidates[0], "upload", "--input-dir", artifact_path, "--fqbn", effective_fqbn]
+        command = [executable or spec.executable_candidates[0], "upload", "--input-dir", str(artifact_path), "--fqbn", effective_fqbn]
         if port:
             command.extend(["--port", port])
     elif spec.name == "esptool":
@@ -103,32 +111,44 @@ def build_flash_plan(
             port or "/dev/ttyUSB0",
             "write_flash",
             "0x1000",
-            artifact_path,
+            str(artifact_path),
         ]
     elif spec.name == "teensy-loader":
-        command = [executable or spec.executable_candidates[0], "--mcu", infer_teensy_mcu(board), "-w", artifact_path]
+        command = [executable or spec.executable_candidates[0], "--mcu", infer_teensy_mcu(board), "-w", str(artifact_path)]
     elif spec.name == "stm32-programmer":
         command = [
             executable or spec.executable_candidates[0],
             "-c",
             f"port={port or 'SWD'}",
             "-d",
-            artifact_path,
+            str(artifact_path),
             "0x08000000",
             "-v",
         ]
     else:
         host = port or "iot-edge.local"
-        command = [executable or spec.executable_candidates[0], artifact_path, f"iotron@{host}:/opt/iotron/firmware/"]
+        command = [executable or spec.executable_candidates[0], str(artifact_path), f"iotron@{host}:/opt/iotron/firmware/"]
 
+    deployment_id = f"dep-{uuid4().hex[:12]}"
+    rollout_policy = rollout or default_rollout_policy()
+    manifest = build_artifact_manifest(artifact_path)
     return {
+        "deployment_id": deployment_id,
         "operation": "flash",
         "board": board,
         "toolchain": spec.name,
         "available": bool(executable),
-        "artifact": artifact_path,
+        "artifact": str(artifact_path),
+        "artifact_sha256": validation["sha256"],
+        "artifact_size": validation["size_bytes"],
+        "artifact_manifest": manifest,
         "command": command,
+        "rollout": rollout_policy,
+        "rollback_artifact": rollback_artifact,
+        "health_check": default_health_check(board),
         "notes": _notes_for_toolchain(spec.name),
+        "status": "planned",
+        "stage": "preflight",
     }
 
 
@@ -138,23 +158,36 @@ def build_ota_plan(
     host: str,
     username: str = "iotron",
     destination: str = "/opt/iotron/ota",
+    rollout: dict[str, Any] | None = None,
+    rollback_artifact: str | None = None,
 ) -> dict[str, Any]:
     spec = resolve_toolchain(board)
     executable = resolve_executable(("scp",))
-    artifact_path = str(Path(artifact))
-    command = [executable or "scp", artifact_path, f"{username}@{host}:{destination}/"]
+    artifact_path = Path(artifact)
+    validation = validate_artifact(artifact_path)
+    deployment_id = f"dep-{uuid4().hex[:12]}"
+    command = [executable or "scp", str(artifact_path), f"{username}@{host}:{destination}/"]
     return {
+        "deployment_id": deployment_id,
         "operation": "ota",
         "board": board,
         "toolchain": spec.name,
         "available": bool(executable),
-        "artifact": artifact_path,
+        "artifact": str(artifact_path),
+        "artifact_sha256": validation["sha256"],
+        "artifact_size": validation["size_bytes"],
+        "artifact_manifest": build_artifact_manifest(artifact_path),
         "host": host,
         "command": command,
+        "rollout": rollout or default_rollout_policy(),
+        "rollback_artifact": rollback_artifact,
+        "health_check": default_health_check(board, host=host),
         "notes": [
             "OTA assumes an SSH-accessible edge agent or updater is already installed on the target.",
             "Use signed firmware artifacts for production rollouts.",
         ],
+        "status": "planned",
+        "stage": "preflight",
     }
 
 
@@ -164,6 +197,17 @@ def execute_plan(plan: dict[str, Any], timeout: int = 300) -> dict[str, Any]:
         plan["returncode"] = None
         plan["stdout"] = ""
         plan["stderr"] = "Required toolchain executable was not found on PATH."
+        plan["status"] = "blocked"
+        return plan
+
+    artifact_check = validate_artifact(Path(plan["artifact"]), expected_sha256=plan["artifact_sha256"])
+    plan["artifact_verified"] = artifact_check["verified"]
+    if not artifact_check["verified"]:
+        plan["executed"] = False
+        plan["returncode"] = None
+        plan["stdout"] = ""
+        plan["stderr"] = "Artifact checksum mismatch."
+        plan["status"] = "failed_preflight"
         return plan
 
     completed = subprocess.run(plan["command"], capture_output=True, text=True, timeout=timeout, check=False)
@@ -171,6 +215,8 @@ def execute_plan(plan: dict[str, Any], timeout: int = 300) -> dict[str, Any]:
     plan["returncode"] = completed.returncode
     plan["stdout"] = completed.stdout
     plan["stderr"] = completed.stderr
+    plan["stage"] = "verification"
+    plan["status"] = "succeeded" if completed.returncode == 0 else "failed"
     return plan
 
 
@@ -180,6 +226,72 @@ def resolve_executable(candidates: tuple[str, ...]) -> str | None:
         if executable:
             return executable
     return None
+
+
+def validate_artifact(path: Path, expected_sha256: str | None = None) -> dict[str, Any]:
+    if not path.exists() or not path.is_file():
+        raise ValueError(f"Artifact '{path}' does not exist or is not a file")
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return {
+        "path": str(path),
+        "size_bytes": path.stat().st_size,
+        "sha256": digest,
+        "verified": expected_sha256 is None or hmac.compare_digest(digest, expected_sha256),
+    }
+
+
+def build_artifact_manifest(path: Path) -> dict[str, Any]:
+    validation = validate_artifact(path)
+    signature = sign_artifact_digest(validation["sha256"])
+    return {
+        "artifact": validation["path"],
+        "size_bytes": validation["size_bytes"],
+        "sha256": validation["sha256"],
+        "signature": signature,
+        "signature_algorithm": "hmac-sha256",
+    }
+
+
+def verify_artifact_manifest(manifest: dict[str, Any]) -> bool:
+    expected = sign_artifact_digest(manifest["sha256"])
+    return hmac.compare_digest(expected, manifest["signature"])
+
+
+def sign_artifact_digest(digest: str) -> str:
+    secret = os.getenv("IOTRON_ARTIFACT_SIGNING_KEY", "iotron-artifact-signing-key")
+    return hmac.new(secret.encode("utf-8"), digest.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def default_rollout_policy() -> dict[str, Any]:
+    return {
+        "strategy": "staged",
+        "batch_percentages": [10, 25, 50, 100],
+        "require_health_confirmation": True,
+        "rollback_on_failure": True,
+        "retry_limit": 3,
+    }
+
+
+def default_health_check(board: str, host: str | None = None) -> dict[str, Any]:
+    if board.startswith(("jetson", "raspberry-pi", "beaglebone")):
+        return {
+            "type": "ssh-service",
+            "host": host or "iot-edge.local",
+            "command": "systemctl is-active iotron-agent",
+        }
+    return {
+        "type": "heartbeat",
+        "expectation": "device reports heartbeat within 120 seconds after deployment",
+    }
+
+
+def confirm_device_health(device_id: str, status: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {
+        "device_id": device_id,
+        "status": status,
+        "confirmed": status == "healthy",
+        "details": details or {},
+    }
 
 
 def infer_fqbn(board: str) -> str:

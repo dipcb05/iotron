@@ -7,15 +7,27 @@ from typing import Any
 
 from .ai import build_project_plan
 from .catalog import BOARD_FAMILIES, NETWORKS, PROTOCOLS, list_boards
+from .security import issue_device_token, issue_operator_token
 from .storage import (
+    list_audit_events,
+    list_deployments,
     load_config,
     load_packages,
     load_runtime_state,
+    log_audit_event,
+    prune_telemetry,
     save_config,
+    save_deployment,
     save_packages,
     save_runtime_state,
 )
-from .toolchains import build_flash_plan, build_ota_plan, execute_plan, list_toolchains
+from .toolchains import (
+    build_flash_plan,
+    build_ota_plan,
+    confirm_device_health,
+    execute_plan,
+    list_toolchains,
+)
 
 
 class IoTronService:
@@ -60,7 +72,22 @@ class IoTronService:
     def list_packages(self) -> list[dict[str, str]]:
         return self._packages.get("packages", [])
 
-    def install_package(self, name: str, version: str = "latest") -> dict[str, str]:
+    def list_devices(self) -> list[dict[str, Any]]:
+        return self._runtime_state.get("devices", [])
+
+    def list_telemetry(self, device_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        events = self._runtime_state.get("telemetry", [])
+        if device_id is not None:
+            events = [event for event in events if event["device_id"] == device_id]
+        return events[-limit:]
+
+    def list_deployments(self, limit: int = 100) -> list[dict[str, Any]]:
+        return list_deployments(limit=limit)
+
+    def list_audit_events(self, limit: int = 100) -> list[dict[str, Any]]:
+        return list_audit_events(limit=limit)
+
+    def install_package(self, name: str, version: str = "latest", actor: str = "system") -> dict[str, str]:
         existing = self._find_package(name)
         package_record = {
             "name": name,
@@ -73,18 +100,20 @@ class IoTronService:
         else:
             existing.update(package_record)
         self._save_packages()
+        self._log(actor, "install_package", "package", name, package_record)
         return package_record
 
-    def uninstall_package(self, name: str) -> bool:
+    def uninstall_package(self, name: str, actor: str = "system") -> bool:
         packages = self._packages.get("packages", [])
         before = len(packages)
         self._packages["packages"] = [item for item in packages if item["name"] != name]
         changed = len(self._packages["packages"]) != before
         if changed:
             self._save_packages()
+            self._log(actor, "uninstall_package", "package", name, {})
         return changed
 
-    def update_package(self, name: str, version: str = "latest") -> dict[str, str]:
+    def update_package(self, name: str, version: str = "latest", actor: str = "system") -> dict[str, str]:
         existing = self._find_package(name)
         package_record = {
             "name": name,
@@ -97,18 +126,20 @@ class IoTronService:
         else:
             existing.update(package_record)
         self._save_packages()
+        self._log(actor, "update_package", "package", name, package_record)
         return package_record
 
-    def select_board(self, board: str) -> dict[str, Any]:
+    def select_board(self, board: str, actor: str = "system") -> dict[str, Any]:
         supported = {entry["name"] for entry in list_boards()}
         supported |= {f"{family}-{name}" for family, names in BOARD_FAMILIES.items() for name in names}
         if board not in supported:
             raise ValueError(f"Unsupported board '{board}'")
         self._config["selected_board"] = board
         self._save_config()
+        self._log(actor, "select_board", "project", self._config["project"], {"board": board})
         return self.status()
 
-    def enable_protocol(self, name: str) -> dict[str, Any]:
+    def enable_protocol(self, name: str, actor: str = "system") -> dict[str, Any]:
         if name not in PROTOCOLS:
             raise ValueError(f"Unsupported protocol '{name}'")
         enabled = self._config.setdefault("enabled_protocols", [])
@@ -116,9 +147,10 @@ class IoTronService:
             enabled.append(name)
             enabled.sort()
             self._save_config()
+            self._log(actor, "enable_protocol", "protocol", name, {})
         return self.status()
 
-    def enable_network(self, name: str) -> dict[str, Any]:
+    def enable_network(self, name: str, actor: str = "system") -> dict[str, Any]:
         if name not in NETWORKS:
             raise ValueError(f"Unsupported network '{name}'")
         enabled = self._config.setdefault("enabled_networks", [])
@@ -126,12 +158,13 @@ class IoTronService:
             enabled.append(name)
             enabled.sort()
             self._save_config()
+            self._log(actor, "enable_network", "network", name, {})
         return self.status()
 
-    def install_web_dashboard(self) -> dict[str, Any]:
-        self.install_package("web-dashboard")
-        self.install_package("dashboard-charts")
-        self.install_package("realtime-stream")
+    def install_web_dashboard(self, actor: str = "system") -> dict[str, Any]:
+        self.install_package("web-dashboard", actor=actor)
+        self.install_package("dashboard-charts", actor=actor)
+        self.install_package("realtime-stream", actor=actor)
         self._config.setdefault("features", {})["web_dashboard"] = True
         if "http" not in self._config.setdefault("enabled_networks", []):
             self._config["enabled_networks"].append("http")
@@ -139,6 +172,7 @@ class IoTronService:
             self._config["enabled_networks"].append("websocket")
         self._config["enabled_networks"].sort()
         self._save_config()
+        self._log(actor, "install_dashboard", "feature", "web_dashboard", {})
         return self.status()
 
     def dashboard_summary(self) -> dict[str, Any]:
@@ -165,10 +199,9 @@ class IoTronService:
             "packages": self.list_packages(),
             "devices": self.list_devices(),
             "telemetry": self.list_telemetry(limit=25),
+            "deployments": self.list_deployments(limit=10),
+            "audit_log": self.list_audit_events(limit=10),
         }
-
-    def list_devices(self) -> list[dict[str, Any]]:
-        return self._runtime_state.get("devices", [])
 
     def register_device(
         self,
@@ -177,6 +210,7 @@ class IoTronService:
         protocol: str | None = None,
         network: str | None = None,
         metadata: dict[str, Any] | None = None,
+        actor: str = "system",
     ) -> dict[str, Any]:
         supported = {entry["name"] for entry in list_boards()}
         supported |= {f"{family}-{name}" for family, names in BOARD_FAMILIES.items() for name in names}
@@ -187,6 +221,7 @@ class IoTronService:
         if network and network not in NETWORKS:
             raise ValueError(f"Unsupported network '{network}'")
 
+        device_token = issue_device_token(device_id)
         device = self._find_device(device_id)
         payload = {
             "device_id": device_id,
@@ -196,20 +231,24 @@ class IoTronService:
             "metadata": metadata or {},
             "registered_at": self._timestamp(),
             "last_seen": self._timestamp(),
+            "auth_identity": f"device:{device_id}",
         }
         if device is None:
             self._runtime_state.setdefault("devices", []).append(payload)
         else:
             device.update(payload)
         self._save_runtime_state()
+        self._log(actor, "register_device", "device", device_id, payload)
+        payload["device_token"] = device_token
         return payload
 
-    def heartbeat_device(self, device_id: str) -> dict[str, Any]:
+    def heartbeat_device(self, device_id: str, actor: str = "device") -> dict[str, Any]:
         device = self._find_device(device_id)
         if device is None:
             raise ValueError(f"Unknown device '{device_id}'")
         device["last_seen"] = self._timestamp()
         self._save_runtime_state()
+        self._log(actor, "heartbeat_device", "device", device_id, {"last_seen": device["last_seen"]})
         return device
 
     def ingest_telemetry(
@@ -218,6 +257,7 @@ class IoTronService:
         metric: str,
         value: Any,
         recorded_at: str | None = None,
+        actor: str = "device",
     ) -> dict[str, Any]:
         device = self._find_device(device_id)
         if device is None:
@@ -231,13 +271,68 @@ class IoTronService:
         self._runtime_state.setdefault("telemetry", []).append(event)
         device["last_seen"] = event["recorded_at"]
         self._save_runtime_state()
+        self._log(actor, "ingest_telemetry", "device", device_id, {"metric": metric})
         return event
 
-    def list_telemetry(self, device_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
-        events = self._runtime_state.get("telemetry", [])
-        if device_id is not None:
-            events = [event for event in events if event["device_id"] == device_id]
-        return events[-limit:]
+    def confirm_device_deployment(self, device_id: str, status: str, details: dict[str, Any] | None = None, actor: str = "device") -> dict[str, Any]:
+        result = confirm_device_health(device_id, status, details)
+        self._log(actor, "confirm_device_deployment", "device", device_id, result)
+        return result
+
+    def flash_firmware(
+        self,
+        board: str,
+        artifact: str,
+        port: str | None = None,
+        fqbn: str | None = None,
+        execute: bool = False,
+        rollout: dict[str, Any] | None = None,
+        rollback_artifact: str | None = None,
+        actor: str = "system",
+    ) -> dict[str, Any]:
+        plan = build_flash_plan(
+            board=board,
+            artifact=artifact,
+            port=port,
+            fqbn=fqbn,
+            rollout=rollout,
+            rollback_artifact=rollback_artifact,
+        )
+        if execute:
+            plan = execute_plan(plan)
+        self._record_deployment(plan, actor=actor)
+        return plan
+
+    def ota_update(
+        self,
+        board: str,
+        artifact: str,
+        host: str,
+        username: str = "iotron",
+        destination: str = "/opt/iotron/ota",
+        execute: bool = False,
+        rollout: dict[str, Any] | None = None,
+        rollback_artifact: str | None = None,
+        actor: str = "system",
+    ) -> dict[str, Any]:
+        plan = build_ota_plan(
+            board=board,
+            artifact=artifact,
+            host=host,
+            username=username,
+            destination=destination,
+            rollout=rollout,
+            rollback_artifact=rollback_artifact,
+        )
+        if execute:
+            plan = execute_plan(plan)
+        self._record_deployment(plan, actor=actor)
+        return plan
+
+    def issue_operator_token(self, subject: str, role: str = "admin", actor: str = "system") -> dict[str, str]:
+        token = issue_operator_token(subject, role=role)
+        self._log(actor, "issue_operator_token", "identity", subject, {"role": role})
+        return {"subject": subject, "role": role, "token": token}
 
     def backend_overview(self) -> dict[str, Any]:
         return {
@@ -251,10 +346,16 @@ class IoTronService:
                 "packages": len(self._packages.get("packages", [])),
                 "protocols": len(PROTOCOLS),
                 "networks": len(NETWORKS),
+                "deployments": len(self.list_deployments(limit=1000)),
             },
             "ingestion": {
                 "telemetry_events": len(self._runtime_state.get("telemetry", [])),
                 "recent_events": self.list_telemetry(limit=10),
+                "retention_action": "SQLite-backed event log with pruning support",
+            },
+            "security": {
+                "auth_modes": ["api_key", "bearer_operator", "bearer_device"],
+                "audit_events": len(self.list_audit_events(limit=1000)),
             },
         }
 
@@ -266,43 +367,16 @@ class IoTronService:
             "storage": {
                 "name": "sqlite-local",
                 "driver": "sqlite3",
-                "path": "vendor/iotron_runtime.db",
-                "retention_policy": "30 days hot telemetry with manifest journaling",
+                "path": "vendor/iotron_state.db",
+                "retention_policy": "latest 1000 telemetry events per device with audit log retention",
             },
         }
 
-    def flash_firmware(
-        self,
-        board: str,
-        artifact: str,
-        port: str | None = None,
-        fqbn: str | None = None,
-        execute: bool = False,
-    ) -> dict[str, Any]:
-        plan = build_flash_plan(board=board, artifact=artifact, port=port, fqbn=fqbn)
-        if execute:
-            return execute_plan(plan)
-        return plan
-
-    def ota_update(
-        self,
-        board: str,
-        artifact: str,
-        host: str,
-        username: str = "iotron",
-        destination: str = "/opt/iotron/ota",
-        execute: bool = False,
-    ) -> dict[str, Any]:
-        plan = build_ota_plan(
-            board=board,
-            artifact=artifact,
-            host=host,
-            username=username,
-            destination=destination,
-        )
-        if execute:
-            return execute_plan(plan)
-        return plan
+    def prune_runtime_data(self, retain_latest_per_device: int = 1000, actor: str = "system") -> dict[str, Any]:
+        deleted = prune_telemetry(retain_latest_per_device=retain_latest_per_device)
+        self.refresh()
+        self._log(actor, "prune_runtime_data", "telemetry", "global", {"deleted": deleted})
+        return {"deleted_telemetry_events": deleted}
 
     def ai_plan(
         self,
@@ -315,6 +389,24 @@ class IoTronService:
 
     def export_config(self) -> dict[str, Any]:
         return self._config
+
+    def _record_deployment(self, plan: dict[str, Any], actor: str) -> None:
+        timestamp = self._timestamp()
+        record = {
+            "deployment_id": plan["deployment_id"],
+            "operation": plan["operation"],
+            "board": plan["board"],
+            "artifact": plan["artifact"],
+            "artifact_sha256": plan["artifact_sha256"],
+            "stage": plan.get("stage", "planned"),
+            "status": plan.get("status", "planned"),
+            "rollout": plan.get("rollout", {}),
+            "rollback_artifact": plan.get("rollback_artifact"),
+            "created_at": timestamp,
+            "updated_at": timestamp,
+        }
+        save_deployment(record)
+        self._log(actor, f"{plan['operation']}_deployment", "deployment", plan["deployment_id"], record)
 
     def _find_package(self, name: str) -> dict[str, str] | None:
         for package in self._packages.get("packages", []):
@@ -339,6 +431,16 @@ class IoTronService:
     def _save_runtime_state(self) -> None:
         save_runtime_state(self._runtime_state)
         self.refresh()
+
+    def _log(self, actor: str, action: str, resource_type: str, resource_id: str, metadata: dict[str, Any]) -> None:
+        log_audit_event(
+            actor=actor,
+            action=action,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            metadata=metadata,
+            created_at=self._timestamp(),
+        )
 
     @staticmethod
     def _timestamp() -> str:

@@ -10,14 +10,20 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .security import RateLimitMiddleware, SecurityHeadersMiddleware, load_security_settings, require_api_key
+from .security import (
+    RateLimitMiddleware,
+    SecurityHeadersMiddleware,
+    load_security_settings,
+    require_device_identity,
+    require_operator,
+)
 from .service import IoTronService
 
 APP_ROOT = Path(__file__).resolve().parent
 DASHBOARD_ROOT = APP_ROOT / "dashboard"
 ASSET_ROOT = DASHBOARD_ROOT / "assets"
 
-app = FastAPI(title="IoTron API", version="0.2.0")
+app = FastAPI(title="IoTron API", version="0.3.0")
 service = IoTronService()
 security_settings = load_security_settings()
 
@@ -28,7 +34,7 @@ app.add_middleware(
     allow_origins=security_settings.allowed_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST"],
-    allow_headers=["X-API-Key", "Content-Type"],
+    allow_headers=["X-API-Key", "X-Device-Token", "Authorization", "Content-Type"],
 )
 app.mount("/dashboard/assets", StaticFiles(directory=ASSET_ROOT), name="dashboard-assets")
 
@@ -40,6 +46,11 @@ class PackageRequest(BaseModel):
 
 class NameRequest(BaseModel):
     name: str = Field(..., min_length=1)
+
+
+class TokenRequest(BaseModel):
+    subject: str = Field(..., min_length=2)
+    role: str = Field(default="admin", min_length=4)
 
 
 class DeviceRequest(BaseModel):
@@ -54,12 +65,20 @@ class DeviceHeartbeatRequest(BaseModel):
     device_id: str = Field(..., min_length=2)
 
 
+class DeviceDeploymentConfirmation(BaseModel):
+    device_id: str = Field(..., min_length=2)
+    status: str = Field(..., min_length=2)
+    details: dict[str, object] = Field(default_factory=dict)
+
+
 class FlashRequest(BaseModel):
     board: str = Field(..., min_length=2)
     artifact: str = Field(..., min_length=1)
     port: str | None = None
     fqbn: str | None = None
     execute: bool = False
+    rollout: dict[str, object] = Field(default_factory=dict)
+    rollback_artifact: str | None = None
 
 
 class OTARequest(BaseModel):
@@ -69,6 +88,8 @@ class OTARequest(BaseModel):
     username: str = "iotron"
     destination: str = "/opt/iotron/ota"
     execute: bool = False
+    rollout: dict[str, object] = Field(default_factory=dict)
+    rollback_artifact: str | None = None
 
 
 class AIPlanRequest(BaseModel):
@@ -107,6 +128,11 @@ def dashboard() -> FileResponse:
 @app.get("/dashboard/data")
 def dashboard_data() -> dict[str, object]:
     return service.dashboard_data()
+
+
+@app.post("/auth/token")
+def auth_token(payload: TokenRequest, identity: dict[str, object] = Depends(require_operator)) -> dict[str, str]:
+    return service.issue_operator_token(payload.subject, role=payload.role, actor=str(identity["sub"]))
 
 
 @app.get("/backend/overview")
@@ -149,8 +175,18 @@ def devices() -> list[dict[str, object]]:
     return service.list_devices()
 
 
-@app.post("/devices/register", dependencies=[Depends(require_api_key)])
-def register_device(payload: DeviceRequest) -> dict[str, object]:
+@app.get("/deployments")
+def deployments(limit: int = 100) -> list[dict[str, object]]:
+    return service.list_deployments(limit=limit)
+
+
+@app.get("/audit")
+def audit(limit: int = 100, identity: dict[str, object] = Depends(require_operator)) -> list[dict[str, object]]:
+    return service.list_audit_events(limit=limit)
+
+
+@app.post("/devices/register")
+def register_device(payload: DeviceRequest, identity: dict[str, object] = Depends(require_operator)) -> dict[str, object]:
     try:
         return service.register_device(
             device_id=payload.device_id,
@@ -158,17 +194,38 @@ def register_device(payload: DeviceRequest) -> dict[str, object]:
             protocol=payload.protocol,
             network=payload.network,
             metadata=payload.metadata,
+            actor=str(identity["sub"]),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/devices/heartbeat", dependencies=[Depends(require_api_key)])
-def heartbeat_device(payload: DeviceHeartbeatRequest) -> dict[str, object]:
+@app.post("/devices/heartbeat")
+def heartbeat_device(
+    payload: DeviceHeartbeatRequest,
+    identity: dict[str, object] = Depends(require_device_identity),
+) -> dict[str, object]:
+    if identity.get("device_id") != payload.device_id:
+        raise HTTPException(status_code=403, detail="Device token does not match requested device")
     try:
-        return service.heartbeat_device(payload.device_id)
+        return service.heartbeat_device(payload.device_id, actor=str(identity["sub"]))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/devices/deployment-confirmation")
+def device_deployment_confirmation(
+    payload: DeviceDeploymentConfirmation,
+    identity: dict[str, object] = Depends(require_device_identity),
+) -> dict[str, object]:
+    if identity.get("device_id") != payload.device_id:
+        raise HTTPException(status_code=403, detail="Device token does not match requested device")
+    return service.confirm_device_deployment(
+        payload.device_id,
+        payload.status,
+        details=payload.details,
+        actor=str(identity["sub"]),
+    )
 
 
 @app.get("/telemetry")
@@ -176,32 +233,38 @@ def telemetry(device_id: str | None = None, limit: int = 100) -> list[dict[str, 
     return service.list_telemetry(device_id=device_id, limit=limit)
 
 
-@app.post("/telemetry", dependencies=[Depends(require_api_key)])
-def ingest_telemetry(payload: TelemetryRequest) -> dict[str, object]:
+@app.post("/telemetry")
+def ingest_telemetry(
+    payload: TelemetryRequest,
+    identity: dict[str, object] = Depends(require_device_identity),
+) -> dict[str, object]:
+    if identity.get("device_id") != payload.device_id:
+        raise HTTPException(status_code=403, detail="Device token does not match requested device")
     try:
         return service.ingest_telemetry(
             device_id=payload.device_id,
             metric=payload.metric,
             value=payload.value,
             recorded_at=payload.recorded_at,
+            actor=str(identity["sub"]),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/packages/install", dependencies=[Depends(require_api_key)])
-def install_package(payload: PackageRequest) -> dict[str, str]:
-    return service.install_package(payload.package, payload.version)
+@app.post("/packages/install")
+def install_package(payload: PackageRequest, identity: dict[str, object] = Depends(require_operator)) -> dict[str, str]:
+    return service.install_package(payload.package, payload.version, actor=str(identity["sub"]))
 
 
-@app.post("/packages/uninstall", dependencies=[Depends(require_api_key)])
-def uninstall_package(payload: NameRequest) -> dict[str, object]:
-    return {"removed": service.uninstall_package(payload.name), "package": payload.name}
+@app.post("/packages/uninstall")
+def uninstall_package(payload: NameRequest, identity: dict[str, object] = Depends(require_operator)) -> dict[str, object]:
+    return {"removed": service.uninstall_package(payload.name, actor=str(identity["sub"])), "package": payload.name}
 
 
-@app.post("/packages/update", dependencies=[Depends(require_api_key)])
-def update_package(payload: PackageRequest) -> dict[str, str]:
-    return service.update_package(payload.package, payload.version)
+@app.post("/packages/update")
+def update_package(payload: PackageRequest, identity: dict[str, object] = Depends(require_operator)) -> dict[str, str]:
+    return service.update_package(payload.package, payload.version, actor=str(identity["sub"]))
 
 
 @app.get("/project/state")
@@ -209,37 +272,37 @@ def project_state() -> dict[str, object]:
     return service.status()
 
 
-@app.post("/project/select-board", dependencies=[Depends(require_api_key)])
-def select_board(payload: NameRequest) -> dict[str, object]:
+@app.post("/project/select-board")
+def select_board(payload: NameRequest, identity: dict[str, object] = Depends(require_operator)) -> dict[str, object]:
     try:
-        return service.select_board(payload.name)
+        return service.select_board(payload.name, actor=str(identity["sub"]))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/project/enable-protocol", dependencies=[Depends(require_api_key)])
-def enable_protocol(payload: NameRequest) -> dict[str, object]:
+@app.post("/project/enable-protocol")
+def enable_protocol(payload: NameRequest, identity: dict[str, object] = Depends(require_operator)) -> dict[str, object]:
     try:
-        return service.enable_protocol(payload.name)
+        return service.enable_protocol(payload.name, actor=str(identity["sub"]))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/project/enable-network", dependencies=[Depends(require_api_key)])
-def enable_network(payload: NameRequest) -> dict[str, object]:
+@app.post("/project/enable-network")
+def enable_network(payload: NameRequest, identity: dict[str, object] = Depends(require_operator)) -> dict[str, object]:
     try:
-        return service.enable_network(payload.name)
+        return service.enable_network(payload.name, actor=str(identity["sub"]))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/project/web/install", dependencies=[Depends(require_api_key)])
-def install_dashboard() -> dict[str, object]:
-    return service.install_web_dashboard()
+@app.post("/project/web/install")
+def install_dashboard(identity: dict[str, object] = Depends(require_operator)) -> dict[str, object]:
+    return service.install_web_dashboard(actor=str(identity["sub"]))
 
 
-@app.post("/project/flash", dependencies=[Depends(require_api_key)])
-def flash(payload: FlashRequest) -> dict[str, object]:
+@app.post("/project/flash")
+def flash(payload: FlashRequest, identity: dict[str, object] = Depends(require_operator)) -> dict[str, object]:
     try:
         return service.flash_firmware(
             board=payload.board,
@@ -247,13 +310,16 @@ def flash(payload: FlashRequest) -> dict[str, object]:
             port=payload.port,
             fqbn=payload.fqbn,
             execute=payload.execute,
+            rollout=payload.rollout or None,
+            rollback_artifact=payload.rollback_artifact,
+            actor=str(identity["sub"]),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/project/ota", dependencies=[Depends(require_api_key)])
-def ota(payload: OTARequest) -> dict[str, object]:
+@app.post("/project/ota")
+def ota(payload: OTARequest, identity: dict[str, object] = Depends(require_operator)) -> dict[str, object]:
     try:
         return service.ota_update(
             board=payload.board,
@@ -262,9 +328,17 @@ def ota(payload: OTARequest) -> dict[str, object]:
             username=payload.username,
             destination=payload.destination,
             execute=payload.execute,
+            rollout=payload.rollout or None,
+            rollback_artifact=payload.rollback_artifact,
+            actor=str(identity["sub"]),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/project/prune")
+def prune_runtime(limit: int = 1000, identity: dict[str, object] = Depends(require_operator)) -> dict[str, object]:
+    return service.prune_runtime_data(retain_latest_per_device=limit, actor=str(identity["sub"]))
 
 
 @app.get("/dashboard/summary")

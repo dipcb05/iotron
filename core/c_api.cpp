@@ -41,6 +41,10 @@ const char* iotron_runtime_summary_json() {
     return duplicate_string(runtime_summary_json());
 }
 
+const char* iotron_runtime_supervisor_json() {
+    return duplicate_string(export_runtime_supervisor_json(create_runtime_supervisor(build_default_runtime())));
+}
+
 const char* iotron_sqlite_schema() {
     return duplicate_string(iotron::sqlite_schema());
 }

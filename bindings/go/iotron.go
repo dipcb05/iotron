@@ -53,6 +53,11 @@ type TelemetryRequest struct {
 	RecordedAt string `json:"recorded_at,omitempty"`
 }
 
+type TokenRequest struct {
+	Subject string `json:"subject"`
+	Role    string `json:"role"`
+}
+
 func NewClient(baseURL, apiKey string) *Client {
 	return &Client{
 		BaseURL: strings.TrimRight(baseURL, "/"),
@@ -77,6 +82,14 @@ func (c *Client) NativeManifest() (map[string]any, error) {
 	return c.getJSON("/native/manifest")
 }
 
+func (c *Client) Audit(limit int) ([]map[string]any, error) {
+	path := "/audit"
+	if limit > 0 {
+		path = fmt.Sprintf("%s?limit=%d", path, limit)
+	}
+	return c.getJSONArray(path)
+}
+
 func (c *Client) Toolchains() ([]map[string]any, error) {
 	payload, err := c.getJSONArray("/catalog/toolchains")
 	if err != nil {
@@ -87,6 +100,14 @@ func (c *Client) Toolchains() ([]map[string]any, error) {
 
 func (c *Client) Devices() ([]map[string]any, error) {
 	return c.getJSONArray("/devices")
+}
+
+func (c *Client) Deployments(limit int) ([]map[string]any, error) {
+	path := "/deployments"
+	if limit > 0 {
+		path = fmt.Sprintf("%s?limit=%d", path, limit)
+	}
+	return c.getJSONArray(path)
 }
 
 func (c *Client) Telemetry(deviceID string, limit int) ([]map[string]any, error) {
@@ -110,6 +131,10 @@ func (c *Client) Flash(request FlashRequest) (map[string]any, error) {
 
 func (c *Client) OTA(request OTARequest) (map[string]any, error) {
 	return c.postJSON("/project/ota", request)
+}
+
+func (c *Client) IssueOperatorToken(subject, role string) (map[string]any, error) {
+	return c.postJSON("/auth/token", TokenRequest{Subject: subject, Role: role})
 }
 
 func (c *Client) RegisterDevice(request DeviceRequest) (map[string]any, error) {

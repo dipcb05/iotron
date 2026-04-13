@@ -1,6 +1,6 @@
 {
   "project": "IoTron",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "selected_board": null,
   "enabled_protocols": [],
   "enabled_networks": [
@@ -13,6 +13,6 @@
     "ai_assistant": true
   },
   "paths": {
-    "packages_db": "vendor/installed_packages.db"
+    "packages_db": "vendor/iotron_state.db"
   }
 }

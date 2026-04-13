@@ -23,15 +23,32 @@ jobs:
         run: python -m compileall iotron scripts tests
 
   native:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - name: Install native build tools
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y cmake g++
+      - name: Configure MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
       - name: Configure
         run: cmake -S . -B build
       - name: Build native library
         run: cmake --build build --config Release
+      - name: Run native bridge smoke test
+        shell: bash
+        run: |
+          if [ -f build/libiotron_native.so ]; then export IOTRON_NATIVE_LIB="$PWD/build/libiotron_native.so"; fi
+          if [ -f build/libiotron_native.dylib ]; then export IOTRON_NATIVE_LIB="$PWD/build/libiotron_native.dylib"; fi
+          if [ -f build/Release/iotron_native.dll ]; then export IOTRON_NATIVE_LIB="$PWD/build/Release/iotron_native.dll"; fi
+          if [ -f build/iotron_native.dll ]; then export IOTRON_NATIVE_LIB="$PWD/build/iotron_native.dll"; fi
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m unittest discover -s tests
 
   go-binding-lint:
     runs-on: ubuntu-latest

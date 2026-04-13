@@ -2,6 +2,7 @@
 #define IOTRON_CORE_CONFIG_H
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -49,6 +50,71 @@ struct RuntimeManifest {
     StorageBackend storage;
 };
 
+enum class LifecycleState {
+    kRegistered,
+    kConnecting,
+    kOnline,
+    kDegraded,
+    kRetrying,
+    kOffline,
+};
+
+struct RetryPolicy {
+    int max_attempts;
+    int base_delay_ms;
+    int max_delay_ms;
+    double backoff_multiplier;
+};
+
+struct RuntimeFrame {
+    std::string channel;
+    std::string payload;
+    std::uint64_t sequence;
+    std::string recorded_at;
+};
+
+struct RuntimeBuffer {
+    std::size_t capacity;
+    std::vector<RuntimeFrame> frames;
+    std::size_t dropped_frames;
+};
+
+struct ProtocolSession {
+    std::string protocol_name;
+    LifecycleState state;
+    RetryPolicy retry_policy;
+    int attempts;
+    std::string last_error;
+    std::string connected_at;
+};
+
+struct NetworkSession {
+    std::string transport_name;
+    std::string endpoint;
+    LifecycleState state;
+    RetryPolicy retry_policy;
+    int attempts;
+    std::string last_error;
+    std::string last_heartbeat_at;
+};
+
+struct DeviceRuntime {
+    std::string device_id;
+    DeviceProfile profile;
+    LifecycleState lifecycle;
+    RuntimeBuffer outbound_buffer;
+    RuntimeBuffer inbound_buffer;
+    std::vector<ProtocolSession> protocol_sessions;
+    std::vector<NetworkSession> network_sessions;
+    std::string last_heartbeat_at;
+};
+
+struct RuntimeSupervisor {
+    RuntimeManifest manifest;
+    RetryPolicy retry_policy;
+    std::vector<DeviceRuntime> devices;
+};
+
 DeviceProfile arduino_uno_profile();
 DeviceProfile arduino_nano_profile();
 DeviceProfile arduino_mega_profile();
@@ -94,6 +160,26 @@ bool append_sql_journal(const std::string& journal_path, const std::string& stat
 RuntimeManifest build_default_runtime();
 std::string export_runtime_manifest_json(const RuntimeManifest& manifest);
 bool write_runtime_manifest(const RuntimeManifest& manifest, const std::string& output_path);
+RetryPolicy default_retry_policy();
+RuntimeBuffer create_runtime_buffer(std::size_t capacity);
+ProtocolSession create_protocol_session(const ProtocolProfile& profile, const RetryPolicy& retry_policy);
+NetworkSession create_network_session(const NetworkTransport& transport, const RetryPolicy& retry_policy, const std::string& endpoint);
+DeviceRuntime create_device_runtime(
+    const std::string& device_id,
+    const DeviceProfile& profile,
+    const std::vector<ProtocolProfile>& protocols,
+    const std::vector<NetworkTransport>& networks,
+    const RetryPolicy& retry_policy);
+RuntimeSupervisor create_runtime_supervisor(const RuntimeManifest& manifest);
+bool enqueue_outbound_frame(DeviceRuntime& device, const RuntimeFrame& frame);
+bool enqueue_inbound_frame(DeviceRuntime& device, const RuntimeFrame& frame);
+bool mark_protocol_connected(ProtocolSession& session, const std::string& connected_at);
+bool mark_network_connected(NetworkSession& session, const std::string& heartbeat_at);
+bool mark_protocol_error(ProtocolSession& session, const std::string& error);
+bool mark_network_error(NetworkSession& session, const std::string& error);
+bool update_device_heartbeat(DeviceRuntime& device, const std::string& heartbeat_at);
+std::string lifecycle_state_name(LifecycleState state);
+std::string export_runtime_supervisor_json(const RuntimeSupervisor& supervisor);
 
 }  // namespace iotron
 

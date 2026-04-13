@@ -17,6 +17,7 @@ class NativeIoTronBridge:
         if self._library is not None:
             self._library.iotron_manifest_json.restype = ctypes.c_void_p
             self._library.iotron_runtime_summary_json.restype = ctypes.c_void_p
+            self._library.iotron_runtime_supervisor_json.restype = ctypes.c_void_p
             self._library.iotron_sqlite_schema.restype = ctypes.c_void_p
             self._library.iotron_free_string.argtypes = [ctypes.c_void_p]
 
@@ -46,6 +47,15 @@ class NativeIoTronBridge:
         if self._library is None:
             raise RuntimeError("Native IoTron library is not configured. Set IOTRON_NATIVE_LIB to the compiled shared library path.")
         pointer = self._library.iotron_sqlite_schema()
+        try:
+            return ctypes.string_at(pointer).decode("utf-8")
+        finally:
+            self._library.iotron_free_string(pointer)
+
+    def runtime_supervisor_json(self) -> str:
+        if self._library is None:
+            raise RuntimeError("Native IoTron library is not configured. Set IOTRON_NATIVE_LIB to the compiled shared library path.")
+        pointer = self._library.iotron_runtime_supervisor_json()
         try:
             return ctypes.string_at(pointer).decode("utf-8")
         finally:

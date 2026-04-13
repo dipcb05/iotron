@@ -7,6 +7,7 @@ extern "C" {
 
 const char* iotron_manifest_json();
 const char* iotron_runtime_summary_json();
+const char* iotron_runtime_supervisor_json();
 const char* iotron_sqlite_schema();
 const char* iotron_telemetry_insert_sql(
     const char* device_id,
