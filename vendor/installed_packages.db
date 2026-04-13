@@ -1,0 +1,22 @@
+{
+  "packages": [
+    {
+      "name": "web-dashboard",
+      "version": "latest",
+      "installed_at": "2026-04-13T17:09:13.626288+00:00",
+      "status": "installed"
+    },
+    {
+      "name": "dashboard-charts",
+      "version": "latest",
+      "installed_at": "2026-04-13T17:09:13.684663+00:00",
+      "status": "installed"
+    },
+    {
+      "name": "realtime-stream",
+      "version": "latest",
+      "installed_at": "2026-04-13T17:09:13.763584+00:00",
+      "status": "installed"
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "project": "IoTron",
+  "version": "0.2.0",
+  "selected_board": null,
+  "enabled_protocols": [],
+  "enabled_networks": [
+    "http",
+    "websocket"
+  ],
+  "features": {
+    "web_dashboard": true,
+    "fastapi": true,
+    "ai_assistant": true
+  },
+  "paths": {
+    "packages_db": "vendor/installed_packages.db"
+  }
+}

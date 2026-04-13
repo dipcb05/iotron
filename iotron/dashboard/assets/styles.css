@@ -1,0 +1,229 @@
+:root {
+  --bg: #07111f;
+  --panel: rgba(9, 22, 39, 0.82);
+  --panel-border: rgba(119, 181, 255, 0.18);
+  --text: #eaf3ff;
+  --muted: #9ab3cf;
+  --accent: #4db6ff;
+  --accent-strong: #ffd166;
+  --success: #57d9a3;
+  --shadow: 0 24px 80px rgba(0, 0, 0, 0.32);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", "Trebuchet MS", sans-serif;
+  background:
+    radial-gradient(circle at top left, rgba(77, 182, 255, 0.2), transparent 35%),
+    radial-gradient(circle at bottom right, rgba(255, 209, 102, 0.14), transparent 30%),
+    linear-gradient(180deg, #04101d 0%, #07111f 45%, #0b1726 100%);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+.ambient {
+  position: fixed;
+  inset: auto;
+  border-radius: 999px;
+  filter: blur(70px);
+  pointer-events: none;
+  opacity: 0.35;
+}
+
+.ambient-a {
+  width: 18rem;
+  height: 18rem;
+  background: #4db6ff;
+  top: 3rem;
+  right: 8rem;
+}
+
+.ambient-b {
+  width: 14rem;
+  height: 14rem;
+  background: #ffd166;
+  left: 8rem;
+  bottom: 4rem;
+}
+
+.shell {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 3rem 1.25rem 5rem;
+}
+
+.hero {
+  padding: 2rem 0 1rem;
+}
+
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--accent-strong);
+  font-size: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+h1,
+h2 {
+  margin: 0;
+}
+
+h1 {
+  max-width: 12ch;
+  font-size: clamp(2.4rem, 5vw, 4.6rem);
+  line-height: 0.96;
+}
+
+.lede {
+  max-width: 46rem;
+  color: var(--muted);
+  font-size: 1.05rem;
+  line-height: 1.7;
+}
+
+.hero-actions {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.button {
+  border: 0;
+  border-radius: 999px;
+  padding: 0.9rem 1.2rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.primary {
+  background: linear-gradient(135deg, var(--accent), #80d8ff);
+  color: #03203a;
+}
+
+.secondary {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.grid {
+  display: grid;
+  gap: 1rem;
+}
+
+.summary-grid {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  margin: 2rem 0;
+}
+
+.two-up {
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  margin-top: 1rem;
+}
+
+.panel,
+.summary-card {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 24px;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(16px);
+}
+
+.panel {
+  padding: 1.2rem;
+}
+
+.summary-card {
+  padding: 1rem;
+}
+
+.summary-card h3,
+.summary-card p {
+  margin: 0;
+}
+
+.summary-card p {
+  color: var(--muted);
+  margin-top: 0.35rem;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+}
+
+.badge,
+.chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.78rem;
+}
+
+.badge {
+  background: rgba(77, 182, 255, 0.14);
+  color: var(--accent);
+}
+
+.chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.chip {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+
+.list {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.list-item {
+  padding: 0.9rem;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.list-item strong {
+  display: block;
+  margin-bottom: 0.25rem;
+}
+
+.list-item small {
+  color: var(--muted);
+}
+
+.code-block {
+  margin: 0;
+  white-space: pre-wrap;
+  color: #cfe0f4;
+  background: rgba(1, 8, 18, 0.55);
+  border-radius: 16px;
+  padding: 1rem;
+  min-height: 16rem;
+}
+
+@media (max-width: 640px) {
+  .shell {
+    padding-top: 2rem;
+  }
+
+  h1 {
+    max-width: 100%;
+  }
+}

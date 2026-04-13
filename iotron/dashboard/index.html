@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>IoTron Dashboard</title>
+    <link rel="stylesheet" href="/dashboard/assets/styles.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-a"></div>
+    <div class="ambient ambient-b"></div>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">IoTron Control Plane</p>
+        <h1>Embedded fleet orchestration with protocol-aware deployment.</h1>
+        <p class="lede">
+          Manage boards, transports, packages, and flashing workflows from one dashboard.
+        </p>
+        <div class="hero-actions">
+          <a href="/docs" class="button primary">API Docs</a>
+          <button id="refresh" class="button secondary">Refresh Data</button>
+        </div>
+      </section>
+
+      <section class="grid summary-grid" id="summary-grid"></section>
+
+      <section class="grid two-up">
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Project State</h2>
+            <span class="badge">Live</span>
+          </div>
+          <pre id="project-state" class="code-block">Loading...</pre>
+        </article>
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Toolchains</h2>
+            <span class="badge">Detected</span>
+          </div>
+          <div id="toolchains" class="list"></div>
+        </article>
+      </section>
+
+      <section class="grid two-up">
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Boards</h2>
+            <span class="badge">Catalog</span>
+          </div>
+          <div id="boards" class="chip-list"></div>
+        </article>
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Protocols and Networks</h2>
+            <span class="badge">Stack</span>
+          </div>
+          <div id="protocols" class="list compact"></div>
+          <div id="networks" class="list compact"></div>
+        </article>
+      </section>
+    </main>
+    <script src="/dashboard/assets/app.js" defer></script>
+  </body>
+</html>
