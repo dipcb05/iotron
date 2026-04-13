@@ -1,4 +1,4 @@
-"""CLI entry point for the IoTron MVP."""
+"""CLI entry point for IoTron."""
 
 from __future__ import annotations
 

@@ -2,6 +2,10 @@
 
 IoTron is an open-source IoT framework for building device-to-cloud workflows across embedded boards and edge systems. The repository now includes a working Python control plane, a browser dashboard, board flashing and OTA wrappers, backend-oriented device and telemetry APIs, a populated native runtime layer in `core/`, and starter binding/CI infrastructure.
 
+## Version
+
+IoTron `v0.2.0` is the first release of the framework. It establishes the control plane, native runtime interfaces, backend APIs, and integration surface for board and protocol workflows.
+
 ## Implemented Surfaces
 
 - Python CLI for package, board, protocol, network, flash, OTA, and AI planning workflows
@@ -9,7 +13,7 @@ IoTron is an open-source IoT framework for building device-to-cloud workflows ac
 - Static dashboard UI served from FastAPI at `/dashboard`
 - Board toolchain integration plans for Arduino, ESP32, Teensy, STM32, Jetson, Raspberry Pi, and BeagleBone
 - Native `core/` runtime layer with device, protocol, network, storage descriptors, and a C ABI for shared-library builds
-- Native Python and Go binding glue for future compiled-library integration
+- Native Python and Go binding glue for compiled-library integration
 - CI, release, and security workflows for GitHub Actions
 - API key protection, basic rate limiting, CORS control, and security headers
 
@@ -116,14 +120,13 @@ Native builds:
 - `CMakeLists.txt` provides a shared-library build target for environments with CMake and a C++ compiler.
 - `scripts/build_native.py` provides a direct build path for `g++`, `clang++`, or MSVC `cl`.
 
-This is still not a hardware-validated production driver stack. It is now buildable and binding-ready, but actual board flashing depends on installed vendor toolchains and physical hardware access.
+This release provides the native runtime structure, shared-library interfaces, and board integration workflow. Hardware validation and vendor-tool execution depend on the toolchains and devices installed in the target environment.
 
-## What Still Remains
+## Roadmap
 
-The repository is significantly more complete, but these areas are still future work if you want a full production framework:
+The next areas of expansion for the framework are:
 
 - actual hardware flashing execution in CI with board-specific integration tests and connected devices
 - signed OTA rollout workflow and artifact verification
 - authentication beyond single API key, such as RBAC or OIDC
 - a full multi-page frontend dashboard with auth and device actions
-- real AI provider integration instead of local planning heuristics

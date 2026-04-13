@@ -2,7 +2,7 @@
 
 The active Python implementation for IoTron lives in the root `iotron/` package.
 
-This binding directory now exposes a native bridge helper in `iotron.py` that can load the compiled IoTron shared library when `IOTRON_NATIVE_LIB` is set.
+This binding directory exposes a native bridge helper in `iotron.py` that can load the compiled IoTron shared library when `IOTRON_NATIVE_LIB` is set.
 
 Use:
 

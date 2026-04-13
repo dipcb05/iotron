@@ -1,6 +1,6 @@
 # Go Binding
 
-The Go binding now provides a backend client for the FastAPI control plane.
+The Go binding provides a backend client for the FastAPI control plane.
 
 Current coverage:
 

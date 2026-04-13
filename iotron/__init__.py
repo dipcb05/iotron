@@ -1,4 +1,4 @@
-"""IoTron MVP control plane package."""
+"""IoTron control plane package."""
 
 from .service import IoTronService
 

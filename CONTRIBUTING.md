@@ -5,7 +5,7 @@
 - Keep IoTron board-agnostic at the control-plane level.
 - Treat protocol support as pluggable capability, not hardcoded behavior.
 - Preserve backward compatibility for `config.json` and `vendor/installed_packages.db`.
-- Keep the MVP Python package working even while native `core/` modules evolve.
+- Keep the Python package and native `core/` modules aligned as the framework evolves.
 
 ## Local Setup
 

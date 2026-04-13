@@ -1,6 +1,6 @@
-# Core Runtime Roadmap
+# Core Runtime
 
-The `core/` directory now contains a concrete native runtime manifest layer for IoTron.
+The `core/` directory contains the native runtime layer for IoTron.
 
 Implemented surfaces:
 
@@ -10,6 +10,7 @@ Implemented surfaces:
 - SQLite schema text and append-only journaling helpers
 - runtime manifest export functions for bindings and packaging
 
-Current limitation:
+Current scope:
 
-- this is still descriptor-level native infrastructure, not a compiled hardware SDK with live board drivers or transport stacks
+- the current implementation focuses on runtime descriptors, exported interfaces, and storage helpers that support the first release architecture
+- board-specific live drivers and transport execution layers continue to expand from this base
