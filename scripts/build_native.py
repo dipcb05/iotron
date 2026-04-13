@@ -14,6 +14,7 @@ BUILD_DIR = ROOT / "build"
 SOURCES = [
     "core/core.cpp",
     "core/c_api.cpp",
+    "core/runtime_io.cpp",
     "core/storage/sqlite_handler.cpp",
     "core/protocols/i2c.cpp",
     "core/protocols/spi.cpp",

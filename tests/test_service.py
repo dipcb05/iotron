@@ -126,6 +126,24 @@ class IoTronServiceTests(unittest.TestCase):
         self.assertEqual(overview["inventory"]["devices"], 1)
         self.assertGreaterEqual(len(audit), 2)
 
+    def test_metrics_logs_and_alerts(self) -> None:
+        self.service.install_package("telemetry-pipeline", actor="admin")
+        self.service.register_device("sensor-1", "esp32", protocol="i2c", network="mqtt", actor="admin")
+        metrics = self.service.get_metrics()
+        logs = self.service.get_logs(limit=10)
+        alerts = self.service.get_alerts()
+        self.assertIn("packages.installed", metrics)
+        self.assertGreaterEqual(len(logs), 1)
+        self.assertIsInstance(alerts, list)
+
+    def test_backup_and_restore_cycle(self) -> None:
+        self.service.install_package("telemetry-pipeline", actor="admin")
+        backup = self.service.create_backup(actor="admin")
+        backups = self.service.list_backups()
+        restored = self.service.restore_backup(backup["backup_id"], actor="admin")
+        self.assertTrue(any(item["backup_id"] == backup["backup_id"] for item in backups))
+        self.assertIn("restored_files", restored)
+
     def test_dashboard_route_points_to_html(self) -> None:
         response = dashboard()
         self.assertTrue(str(response.path).endswith("index.html"))
@@ -140,6 +158,10 @@ class IoTronServiceTests(unittest.TestCase):
         self.assertIn("/native/manifest", routes)
         self.assertIn("/auth/token", routes)
         self.assertIn("/audit", routes)
+        self.assertIn("/metrics", routes)
+        self.assertIn("/alerts", routes)
+        self.assertIn("/backups", routes)
+        self.assertIn("/dr/plan", routes)
 
 
 if __name__ == "__main__":

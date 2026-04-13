@@ -1,0 +1,15 @@
+{
+  "project": "IoTron",
+  "version": "0.3.0",
+  "selected_board": null,
+  "enabled_protocols": [],
+  "enabled_networks": [],
+  "features": {
+    "web_dashboard": false,
+    "fastapi": true,
+    "ai_assistant": true
+  },
+  "paths": {
+    "packages_db": "vendor/iotron_state.db"
+  }
+}

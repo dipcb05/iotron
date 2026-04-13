@@ -7,6 +7,17 @@ from typing import Any
 
 from .ai import build_project_plan
 from .catalog import BOARD_FAMILIES, NETWORKS, PROTOCOLS, list_boards
+from .observability import get_logs, get_metrics, log_event, metrics_as_prometheus, record_metric, set_metric
+from .operations import (
+    create_backup,
+    disaster_recovery_plan,
+    generate_alerts,
+    get_job,
+    list_backups,
+    list_jobs,
+    restore_backup,
+    submit_job,
+)
 from .security import issue_device_token, issue_operator_token
 from .storage import (
     list_audit_events,
@@ -35,6 +46,8 @@ class IoTronService:
         self._config = load_config()
         self._packages = load_packages()
         self._runtime_state = load_runtime_state()
+        set_metric("iotron.devices", len(self._runtime_state.get("devices", [])))
+        set_metric("iotron.packages", len(self._packages.get("packages", [])))
 
     def refresh(self) -> None:
         self._config = load_config()
@@ -87,6 +100,44 @@ class IoTronService:
     def list_audit_events(self, limit: int = 100) -> list[dict[str, Any]]:
         return list_audit_events(limit=limit)
 
+    def get_metrics(self) -> dict[str, float]:
+        return get_metrics()
+
+    def get_logs(self, limit: int = 100) -> list[dict[str, Any]]:
+        return get_logs(limit=limit)
+
+    def metrics_export(self) -> str:
+        return metrics_as_prometheus()
+
+    def get_alerts(self) -> list[dict[str, Any]]:
+        return generate_alerts(self.list_devices(), self.list_deployments(limit=100))
+
+    def list_backups(self) -> list[dict[str, Any]]:
+        return list_backups()
+
+    def create_backup(self, actor: str = "system") -> dict[str, Any]:
+        result = create_backup()
+        self._log(actor, "create_backup", "backup", result["backup_id"], result)
+        return result
+
+    def restore_backup(self, backup_id: str, actor: str = "system") -> dict[str, Any]:
+        result = restore_backup(backup_id)
+        self.refresh()
+        self._log(actor, "restore_backup", "backup", backup_id, result)
+        return result
+
+    def disaster_recovery_plan(self) -> dict[str, Any]:
+        return disaster_recovery_plan()
+
+    def submit_job(self, name: str, fn, *args, **kwargs) -> dict[str, Any]:
+        return submit_job(name, fn, *args, **kwargs)
+
+    def list_jobs(self) -> list[dict[str, Any]]:
+        return list_jobs()
+
+    def get_job(self, job_id: str) -> dict[str, Any]:
+        return get_job(job_id)
+
     def install_package(self, name: str, version: str = "latest", actor: str = "system") -> dict[str, str]:
         existing = self._find_package(name)
         package_record = {
@@ -101,6 +152,7 @@ class IoTronService:
             existing.update(package_record)
         self._save_packages()
         self._log(actor, "install_package", "package", name, package_record)
+        record_metric("packages.installed", 1)
         return package_record
 
     def uninstall_package(self, name: str, actor: str = "system") -> bool:
@@ -111,6 +163,7 @@ class IoTronService:
         if changed:
             self._save_packages()
             self._log(actor, "uninstall_package", "package", name, {})
+            record_metric("packages.uninstalled", 1)
         return changed
 
     def update_package(self, name: str, version: str = "latest", actor: str = "system") -> dict[str, str]:
@@ -127,6 +180,7 @@ class IoTronService:
             existing.update(package_record)
         self._save_packages()
         self._log(actor, "update_package", "package", name, package_record)
+        record_metric("packages.updated", 1)
         return package_record
 
     def select_board(self, board: str, actor: str = "system") -> dict[str, Any]:
@@ -239,6 +293,7 @@ class IoTronService:
             device.update(payload)
         self._save_runtime_state()
         self._log(actor, "register_device", "device", device_id, payload)
+        record_metric("devices.registered", 1)
         payload["device_token"] = device_token
         return payload
 
@@ -249,6 +304,7 @@ class IoTronService:
         device["last_seen"] = self._timestamp()
         self._save_runtime_state()
         self._log(actor, "heartbeat_device", "device", device_id, {"last_seen": device["last_seen"]})
+        record_metric("devices.heartbeat", 1)
         return device
 
     def ingest_telemetry(
@@ -272,11 +328,13 @@ class IoTronService:
         device["last_seen"] = event["recorded_at"]
         self._save_runtime_state()
         self._log(actor, "ingest_telemetry", "device", device_id, {"metric": metric})
+        record_metric("telemetry.ingested", 1)
         return event
 
     def confirm_device_deployment(self, device_id: str, status: str, details: dict[str, Any] | None = None, actor: str = "device") -> dict[str, Any]:
         result = confirm_device_health(device_id, status, details)
         self._log(actor, "confirm_device_deployment", "device", device_id, result)
+        record_metric("deployments.health_confirmation", 1)
         return result
 
     def flash_firmware(
@@ -301,6 +359,7 @@ class IoTronService:
         if execute:
             plan = execute_plan(plan)
         self._record_deployment(plan, actor=actor)
+        record_metric("deployments.flash", 1)
         return plan
 
     def ota_update(
@@ -327,6 +386,7 @@ class IoTronService:
         if execute:
             plan = execute_plan(plan)
         self._record_deployment(plan, actor=actor)
+        record_metric("deployments.ota", 1)
         return plan
 
     def issue_operator_token(self, subject: str, role: str = "admin", actor: str = "system") -> dict[str, str]:
@@ -376,6 +436,7 @@ class IoTronService:
         deleted = prune_telemetry(retain_latest_per_device=retain_latest_per_device)
         self.refresh()
         self._log(actor, "prune_runtime_data", "telemetry", "global", {"deleted": deleted})
+        record_metric("telemetry.pruned", deleted)
         return {"deleted_telemetry_events": deleted}
 
     def ai_plan(
@@ -407,6 +468,7 @@ class IoTronService:
         }
         save_deployment(record)
         self._log(actor, f"{plan['operation']}_deployment", "deployment", plan["deployment_id"], record)
+        log_event("info", "deployment_recorded", deployment_id=plan["deployment_id"], status=plan.get("status", "planned"))
 
     def _find_package(self, name: str) -> dict[str, str] | None:
         for package in self._packages.get("packages", []):
@@ -441,6 +503,7 @@ class IoTronService:
             metadata=metadata,
             created_at=self._timestamp(),
         )
+        log_event("info", action, actor=actor, resource_type=resource_type, resource_id=resource_id)
 
     @staticmethod
     def _timestamp() -> str:

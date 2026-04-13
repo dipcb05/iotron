@@ -6,7 +6,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -46,6 +46,10 @@ class PackageRequest(BaseModel):
 
 class NameRequest(BaseModel):
     name: str = Field(..., min_length=1)
+
+
+class BackupRestoreRequest(BaseModel):
+    backup_id: str = Field(..., min_length=4)
 
 
 class TokenRequest(BaseModel):
@@ -120,6 +124,21 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/metrics")
+def metrics() -> PlainTextResponse:
+    return PlainTextResponse(service.metrics_export(), media_type="text/plain; version=0.0.4")
+
+
+@app.get("/logs")
+def logs(limit: int = 100, identity: dict[str, object] = Depends(require_operator)) -> list[dict[str, object]]:
+    return service.get_logs(limit=limit)
+
+
+@app.get("/alerts")
+def alerts(identity: dict[str, object] = Depends(require_operator)) -> list[dict[str, object]]:
+    return service.get_alerts()
+
+
 @app.get("/dashboard")
 def dashboard() -> FileResponse:
     return FileResponse(DASHBOARD_ROOT / "index.html")
@@ -180,9 +199,42 @@ def deployments(limit: int = 100) -> list[dict[str, object]]:
     return service.list_deployments(limit=limit)
 
 
+@app.get("/jobs")
+def jobs(identity: dict[str, object] = Depends(require_operator)) -> list[dict[str, object]]:
+    return service.list_jobs()
+
+
+@app.get("/jobs/{job_id}")
+def job(job_id: str, identity: dict[str, object] = Depends(require_operator)) -> dict[str, object]:
+    return service.get_job(job_id)
+
+
 @app.get("/audit")
 def audit(limit: int = 100, identity: dict[str, object] = Depends(require_operator)) -> list[dict[str, object]]:
     return service.list_audit_events(limit=limit)
+
+
+@app.get("/backups")
+def backups(identity: dict[str, object] = Depends(require_operator)) -> list[dict[str, object]]:
+    return service.list_backups()
+
+
+@app.post("/backups")
+def backup(identity: dict[str, object] = Depends(require_operator)) -> dict[str, object]:
+    return service.create_backup(actor=str(identity["sub"]))
+
+
+@app.post("/backups/restore")
+def backup_restore(payload: BackupRestoreRequest, identity: dict[str, object] = Depends(require_operator)) -> dict[str, object]:
+    try:
+        return service.restore_backup(payload.backup_id, actor=str(identity["sub"]))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/dr/plan")
+def dr_plan(identity: dict[str, object] = Depends(require_operator)) -> dict[str, object]:
+    return service.disaster_recovery_plan()
 
 
 @app.post("/devices/register")
