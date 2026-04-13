@@ -1,4 +1,4 @@
-"""Persistence helpers for project config and production-oriented local storage."""
+"""Persistence helpers for project config and SQLite-backed vendor storage."""
 
 from __future__ import annotations
 
@@ -15,8 +15,10 @@ def project_root() -> Path:
 
 
 CONFIG_PATH = project_root() / "config.json"
+# Legacy import sources retained for one-way bootstrap from older JSON-backed installs.
 PACKAGE_DB_PATH = project_root() / "vendor" / "installed_packages.db"
 RUNTIME_STATE_PATH = project_root() / "vendor" / "runtime_state.json"
+# Active vendor storage backend.
 SQLITE_DB_PATH = project_root() / "vendor" / "iotron_state.db"
 
 
@@ -129,6 +131,33 @@ def _migrate(connection: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS tenants (
+            tenant_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS rbac_policies (
+            role TEXT PRIMARY KEY,
+            permissions_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS revoked_tokens (
+            jti TEXT PRIMARY KEY,
+            revoked_at TEXT NOT NULL,
+            reason TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS notification_channels (
+            channel_id TEXT PRIMARY KEY,
+            channel_type TEXT NOT NULL,
+            target TEXT NOT NULL,
+            enabled INTEGER NOT NULL,
+            metadata_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_telemetry_device_recorded_at
         ON telemetry(device_id, recorded_at DESC);
 
@@ -136,7 +165,38 @@ def _migrate(connection: sqlite3.Connection) -> None:
         ON audit_log(created_at DESC);
         """
     )
+    _seed_defaults(connection)
     _bootstrap_from_legacy_json(connection)
+
+
+def _seed_defaults(connection: sqlite3.Connection) -> None:
+    tenant_count = connection.execute("SELECT COUNT(*) FROM tenants").fetchone()[0]
+    if tenant_count == 0:
+        connection.execute(
+            "INSERT INTO tenants(tenant_id, name, created_at) VALUES (?, ?, datetime('now'))",
+            ("default", "Default Tenant"),
+        )
+    policy_count = connection.execute("SELECT COUNT(*) FROM rbac_policies").fetchone()[0]
+    if policy_count == 0:
+        defaults = {
+            "admin": ["*"],
+            "operator": [
+                "devices:read",
+                "devices:write",
+                "telemetry:read",
+                "deployments:write",
+                "deployments:read",
+                "backups:write",
+                "audit:read",
+            ],
+            "viewer": ["devices:read", "telemetry:read", "deployments:read"],
+            "device": ["telemetry:write", "device:heartbeat"],
+        }
+        for role, permissions in defaults.items():
+            connection.execute(
+                "INSERT INTO rbac_policies(role, permissions_json, updated_at) VALUES (?, ?, datetime('now'))",
+                (role, json.dumps(permissions)),
+            )
 
 
 def _bootstrap_from_legacy_json(connection: sqlite3.Connection) -> None:
@@ -220,7 +280,6 @@ def save_packages(payload: dict[str, Any]) -> None:
             """,
             packages,
         )
-    _write_json(PACKAGE_DB_PATH, {"packages": packages})
 
 
 def load_runtime_state() -> dict[str, Any]:
@@ -250,7 +309,6 @@ def load_runtime_state() -> dict[str, Any]:
         payload["value"] = json.loads(payload.pop("value_json"))
         telemetry.append(payload)
     state = {"devices": devices, "telemetry": telemetry}
-    _write_json(RUNTIME_STATE_PATH, state)
     return state
 
 
@@ -295,7 +353,6 @@ def save_runtime_state(payload: dict[str, Any]) -> None:
                 for item in telemetry
             ],
         )
-    _write_json(RUNTIME_STATE_PATH, payload)
 
 
 def save_deployment(record: dict[str, Any]) -> None:
@@ -399,3 +456,94 @@ def prune_telemetry(retain_latest_per_device: int = 1000) -> int:
                 connection.executemany("DELETE FROM telemetry WHERE id = ?", [(item["id"],) for item in ids])
                 deleted += len(ids)
     return deleted
+
+
+def create_tenant(tenant_id: str, name: str, created_at: str) -> dict[str, Any]:
+    with _db() as connection:
+        connection.execute(
+            "INSERT OR REPLACE INTO tenants(tenant_id, name, created_at) VALUES (?, ?, ?)",
+            (tenant_id, name, created_at),
+        )
+    return {"tenant_id": tenant_id, "name": name, "created_at": created_at}
+
+
+def list_tenants() -> list[dict[str, Any]]:
+    with _db() as connection:
+        rows = connection.execute("SELECT tenant_id, name, created_at FROM tenants ORDER BY created_at ASC").fetchall()
+    return [dict(row) for row in rows]
+
+
+def set_rbac_policy(role: str, permissions: list[str], updated_at: str) -> dict[str, Any]:
+    with _db() as connection:
+        connection.execute(
+            "INSERT OR REPLACE INTO rbac_policies(role, permissions_json, updated_at) VALUES (?, ?, ?)",
+            (role, json.dumps(permissions), updated_at),
+        )
+    return {"role": role, "permissions": permissions, "updated_at": updated_at}
+
+
+def list_rbac_policies() -> list[dict[str, Any]]:
+    with _db() as connection:
+        rows = connection.execute("SELECT role, permissions_json, updated_at FROM rbac_policies ORDER BY role ASC").fetchall()
+    payload = []
+    for row in rows:
+        item = dict(row)
+        item["permissions"] = json.loads(item.pop("permissions_json") or "[]")
+        payload.append(item)
+    return payload
+
+
+def revoke_token(jti: str, revoked_at: str, reason: str) -> dict[str, Any]:
+    with _db() as connection:
+        connection.execute(
+            "INSERT OR REPLACE INTO revoked_tokens(jti, revoked_at, reason) VALUES (?, ?, ?)",
+            (jti, revoked_at, reason),
+        )
+    return {"jti": jti, "revoked_at": revoked_at, "reason": reason}
+
+
+def is_token_revoked(jti: str) -> bool:
+    with _db() as connection:
+        row = connection.execute("SELECT 1 FROM revoked_tokens WHERE jti = ?", (jti,)).fetchone()
+    return row is not None
+
+
+def create_notification_channel(
+    channel_id: str,
+    channel_type: str,
+    target: str,
+    enabled: bool,
+    metadata: dict[str, Any],
+    created_at: str,
+) -> dict[str, Any]:
+    with _db() as connection:
+        connection.execute(
+            """
+            INSERT OR REPLACE INTO notification_channels(
+                channel_id, channel_type, target, enabled, metadata_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (channel_id, channel_type, target, int(enabled), json.dumps(metadata), created_at),
+        )
+    return {
+        "channel_id": channel_id,
+        "channel_type": channel_type,
+        "target": target,
+        "enabled": enabled,
+        "metadata": metadata,
+        "created_at": created_at,
+    }
+
+
+def list_notification_channels() -> list[dict[str, Any]]:
+    with _db() as connection:
+        rows = connection.execute(
+            "SELECT channel_id, channel_type, target, enabled, metadata_json, created_at FROM notification_channels ORDER BY created_at ASC"
+        ).fetchall()
+    payload = []
+    for row in rows:
+        item = dict(row)
+        item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
+        item["enabled"] = bool(item["enabled"])
+        payload.append(item)
+    return payload

@@ -11,7 +11,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from .observability import log_event, record_metric
-from .storage import CONFIG_PATH, SQLITE_DB_PATH, project_root
+from .storage import CONFIG_PATH, SQLITE_DB_PATH, list_notification_channels, project_root
 
 _EXECUTOR = ThreadPoolExecutor(max_workers=4)
 _JOBS_LOCK = threading.RLock()
@@ -127,6 +127,10 @@ def generate_alerts(devices: list[dict[str, Any]], deployments: list[dict[str, A
 def disaster_recovery_plan() -> dict[str, Any]:
     return {
         "backup_strategy": "SQLite and config backups under vendor/backups",
+        "automation": {
+            "pre_restore_checks": ["verify backup id", "stop API workers", "pause deployment jobs"],
+            "post_restore_checks": ["restart workers", "replay alert notifications", "verify device heartbeats"],
+        },
         "restore_steps": [
             "restore latest config.json and iotron_state.db from backup",
             "restart FastAPI workers and background job supervisor",
@@ -135,6 +139,24 @@ def disaster_recovery_plan() -> dict[str, Any]:
         "rpo": "depends on backup frequency",
         "rto": "minutes for local restore, longer for hardware fleet reconciliation",
     }
+
+
+def dispatch_notifications(alerts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deliveries = []
+    channels = [channel for channel in list_notification_channels() if channel.get("enabled")]
+    for channel in channels:
+        payload = {
+            "channel_id": channel["channel_id"],
+            "channel_type": channel["channel_type"],
+            "target": channel["target"],
+            "alert_count": len(alerts),
+            "status": "dispatched",
+        }
+        deliveries.append(payload)
+        log_event("warning", "notification_dispatched", **payload)
+    if deliveries:
+        record_metric("notifications.dispatched", len(deliveries))
+    return deliveries
 
 
 def _future_status(future: Future[Any]) -> dict[str, Any]:

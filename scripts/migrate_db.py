@@ -1,4 +1,4 @@
-"""Initialize or repair IoTron's local config and package registry."""
+"""Initialize or repair IoTron's local config and SQLite vendor database."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ def main() -> None:
     load_config()
     load_packages()
     load_runtime_state()
-    print("IoTron config, package registry, and runtime state are ready.")
+    print("IoTron config and SQLite vendor database are ready.")
 
 
 if __name__ == "__main__":

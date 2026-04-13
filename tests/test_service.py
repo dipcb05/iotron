@@ -8,7 +8,7 @@ from pathlib import Path
 
 from iotron.ai import build_project_plan
 from iotron.api import app, dashboard
-from iotron.security import issue_device_token, issue_operator_token, verify_token
+from iotron.security import issue_device_token, issue_operator_token, security_metadata, verify_token
 from iotron.service import IoTronService
 from iotron.storage import CONFIG_PATH, PACKAGE_DB_PATH, RUNTIME_STATE_PATH, SQLITE_DB_PATH
 from iotron.toolchains import build_artifact_manifest, validate_artifact, verify_artifact_manifest
@@ -144,6 +144,49 @@ class IoTronServiceTests(unittest.TestCase):
         self.assertTrue(any(item["backup_id"] == backup["backup_id"] for item in backups))
         self.assertIn("restored_files", restored)
 
+    def test_tenant_rbac_and_notification_management(self) -> None:
+        tenant = self.service.create_tenant("tenant-a", "Tenant A", actor="admin")
+        policy = self.service.set_rbac_policy("support", ["devices:read"], actor="admin")
+        channel = self.service.create_notification_channel(
+            "ops-email",
+            "email",
+            "ops@example.com",
+            metadata={"routing_key": "ops"},
+            actor="admin",
+        )
+        self.assertEqual(tenant["tenant_id"], "tenant-a")
+        self.assertEqual(policy["role"], "support")
+        self.assertEqual(channel["channel_type"], "email")
+        self.assertTrue(any(item["tenant_id"] == "tenant-a" for item in self.service.list_tenants()))
+        self.assertTrue(any(item["role"] == "support" for item in self.service.list_rbac_policies()))
+        self.assertTrue(any(item["channel_id"] == "ops-email" for item in self.service.list_notification_channels()))
+
+    def test_token_revocation_and_security_metadata(self) -> None:
+        issued = self.service.issue_operator_token("admin@example.com", role="admin", actor="admin")
+        revocation = self.service.revoke_token(issued["token"], actor="admin")
+        self.assertEqual(revocation["subject"], "admin@example.com")
+        with self.assertRaises(Exception):
+            verify_token(issued["token"])
+        metadata = self.service.security_metadata()
+        self.assertIn("auth_modes", metadata)
+        self.assertIn("rbac_policies", metadata)
+        self.assertIn("secret_sources", security_metadata())
+
+    def test_hardware_validation_and_dispatch(self) -> None:
+        with tempfile.NamedTemporaryFile(delete=False) as handle:
+            handle.write(b"firmware-binary")
+            artifact = handle.name
+        try:
+            validation = self.service.validate_hardware("esp32", artifact, port="COM5", actor="admin")
+        finally:
+            Path(artifact).unlink(missing_ok=True)
+        self.service.create_notification_channel("ops-email", "email", "ops@example.com", actor="admin")
+        deliveries = self.service.dispatch_notifications(actor="admin")
+        self.assertEqual(validation["validation_type"], "flash")
+        self.assertIn("manifest_verified", validation)
+        self.assertIsInstance(deliveries, list)
+        self.assertGreaterEqual(len(self.service.get_traces(limit=10)), 1)
+
     def test_dashboard_route_points_to_html(self) -> None:
         response = dashboard()
         self.assertTrue(str(response.path).endswith("index.html"))
@@ -157,11 +200,19 @@ class IoTronServiceTests(unittest.TestCase):
         self.assertIn("/telemetry", routes)
         self.assertIn("/native/manifest", routes)
         self.assertIn("/auth/token", routes)
+        self.assertIn("/auth/revoke", routes)
         self.assertIn("/audit", routes)
         self.assertIn("/metrics", routes)
+        self.assertIn("/traces", routes)
         self.assertIn("/alerts", routes)
+        self.assertIn("/alerts/dispatch", routes)
         self.assertIn("/backups", routes)
         self.assertIn("/dr/plan", routes)
+        self.assertIn("/security/metadata", routes)
+        self.assertIn("/tenants", routes)
+        self.assertIn("/rbac/policies", routes)
+        self.assertIn("/notifications/channels", routes)
+        self.assertIn("/project/hardware-validate", routes)
 
 
 if __name__ == "__main__":

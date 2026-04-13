@@ -7,10 +7,13 @@ from typing import Any
 
 from .ai import build_project_plan
 from .catalog import BOARD_FAMILIES, NETWORKS, PROTOCOLS, list_boards
+from .hardware_lab import run_hardware_validation
 from .observability import get_logs, get_metrics, log_event, metrics_as_prometheus, record_metric, set_metric
+from .observability import finish_trace, get_traces, start_trace
 from .operations import (
     create_backup,
     disaster_recovery_plan,
+    dispatch_notifications,
     generate_alerts,
     get_job,
     list_backups,
@@ -18,19 +21,26 @@ from .operations import (
     restore_backup,
     submit_job,
 )
-from .security import issue_device_token, issue_operator_token
+from .security import issue_device_token, issue_operator_token, security_metadata, verify_token
 from .storage import (
+    create_notification_channel,
+    create_tenant,
+    list_notification_channels,
     list_audit_events,
     list_deployments,
+    list_rbac_policies,
+    list_tenants,
     load_config,
     load_packages,
     load_runtime_state,
     log_audit_event,
     prune_telemetry,
+    revoke_token,
     save_config,
     save_deployment,
     save_packages,
     save_runtime_state,
+    set_rbac_policy,
 )
 from .toolchains import (
     build_flash_plan,
@@ -100,17 +110,76 @@ class IoTronService:
     def list_audit_events(self, limit: int = 100) -> list[dict[str, Any]]:
         return list_audit_events(limit=limit)
 
+    def list_tenants(self) -> list[dict[str, Any]]:
+        return list_tenants()
+
+    def create_tenant(self, tenant_id: str, name: str, actor: str = "system") -> dict[str, Any]:
+        tenant = create_tenant(tenant_id, name, self._timestamp())
+        self._log(actor, "create_tenant", "tenant", tenant_id, tenant)
+        return tenant
+
+    def list_rbac_policies(self) -> list[dict[str, Any]]:
+        return list_rbac_policies()
+
+    def set_rbac_policy(self, role: str, permissions: list[str], actor: str = "system") -> dict[str, Any]:
+        policy = set_rbac_policy(role, permissions, self._timestamp())
+        self._log(actor, "set_rbac_policy", "rbac", role, policy)
+        return policy
+
+    def revoke_token(self, token: str, reason: str = "manual_revocation", actor: str = "system") -> dict[str, Any]:
+        payload = verify_token(token)
+        record = revoke_token(payload["jti"], self._timestamp(), reason)
+        self._log(actor, "revoke_token", "identity", str(payload["sub"]), record)
+        return {"subject": payload["sub"], "role": payload["role"], **record}
+
+    def security_metadata(self) -> dict[str, Any]:
+        metadata = security_metadata()
+        metadata["rbac_policies"] = self.list_rbac_policies()
+        metadata["tenant_count"] = len(self.list_tenants())
+        return metadata
+
+    def list_notification_channels(self) -> list[dict[str, Any]]:
+        return list_notification_channels()
+
+    def create_notification_channel(
+        self,
+        channel_id: str,
+        channel_type: str,
+        target: str,
+        enabled: bool = True,
+        metadata: dict[str, Any] | None = None,
+        actor: str = "system",
+    ) -> dict[str, Any]:
+        channel = create_notification_channel(
+            channel_id=channel_id,
+            channel_type=channel_type,
+            target=target,
+            enabled=enabled,
+            metadata=metadata or {},
+            created_at=self._timestamp(),
+        )
+        self._log(actor, "create_notification_channel", "notification", channel_id, channel)
+        return channel
+
     def get_metrics(self) -> dict[str, float]:
         return get_metrics()
 
     def get_logs(self, limit: int = 100) -> list[dict[str, Any]]:
         return get_logs(limit=limit)
 
+    def get_traces(self, limit: int = 100) -> list[dict[str, Any]]:
+        return get_traces(limit=limit)
+
     def metrics_export(self) -> str:
         return metrics_as_prometheus()
 
     def get_alerts(self) -> list[dict[str, Any]]:
         return generate_alerts(self.list_devices(), self.list_deployments(limit=100))
+
+    def dispatch_notifications(self, actor: str = "system") -> list[dict[str, Any]]:
+        deliveries = dispatch_notifications(self.get_alerts())
+        self._log(actor, "dispatch_notifications", "notification", "broadcast", {"deliveries": deliveries})
+        return deliveries
 
     def list_backups(self) -> list[dict[str, Any]]:
         return list_backups()
@@ -137,6 +206,34 @@ class IoTronService:
 
     def get_job(self, job_id: str) -> dict[str, Any]:
         return get_job(job_id)
+
+    def validate_hardware(
+        self,
+        board: str,
+        artifact: str,
+        port: str | None = None,
+        fqbn: str | None = None,
+        host: str | None = None,
+        actor: str = "system",
+    ) -> dict[str, Any]:
+        trace = start_trace("hardware_validation", board=board, artifact=artifact, actor=actor)
+        result = run_hardware_validation(board=board, artifact=artifact, port=port, fqbn=fqbn, host=host)
+        finish_trace(trace["trace_id"], status=result["status"], board=board)
+        self._log(actor, "validate_hardware", "board", board, result)
+        return result
+
+    def schedule_hardware_validation(
+        self,
+        board: str,
+        artifact: str,
+        port: str | None = None,
+        fqbn: str | None = None,
+        host: str | None = None,
+        actor: str = "system",
+    ) -> dict[str, Any]:
+        job = submit_job("hardware_validation", run_hardware_validation, board, artifact, port, fqbn, host)
+        self._log(actor, "schedule_hardware_validation", "board", board, job)
+        return job
 
     def install_package(self, name: str, version: str = "latest", actor: str = "system") -> dict[str, str]:
         existing = self._find_package(name)
@@ -255,6 +352,13 @@ class IoTronService:
             "telemetry": self.list_telemetry(limit=25),
             "deployments": self.list_deployments(limit=10),
             "audit_log": self.list_audit_events(limit=10),
+            "alerts": self.get_alerts(),
+            "metrics": self.get_metrics(),
+            "logs": self.get_logs(limit=25),
+            "traces": self.get_traces(limit=25),
+            "security": self.security_metadata(),
+            "tenants": self.list_tenants(),
+            "notification_channels": self.list_notification_channels(),
         }
 
     def register_device(
@@ -414,8 +518,14 @@ class IoTronService:
                 "retention_action": "SQLite-backed event log with pruning support",
             },
             "security": {
-                "auth_modes": ["api_key", "bearer_operator", "bearer_device"],
+                **self.security_metadata(),
                 "audit_events": len(self.list_audit_events(limit=1000)),
+            },
+            "operations": {
+                "jobs": len(self.list_jobs()),
+                "alerts": len(self.get_alerts()),
+                "backups": len(self.list_backups()),
+                "notification_channels": len(self.list_notification_channels()),
             },
         }
 

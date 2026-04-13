@@ -7,11 +7,13 @@ import threading
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 
 _METRICS_LOCK = threading.RLock()
 _METRICS: dict[str, float] = defaultdict(float)
 _LOGS: deque[dict[str, Any]] = deque(maxlen=1000)
+_TRACES: deque[dict[str, Any]] = deque(maxlen=500)
 
 
 def record_metric(name: str, value: float = 1.0) -> None:
@@ -44,6 +46,41 @@ def log_event(level: str, event: str, **fields: Any) -> dict[str, Any]:
 def get_logs(limit: int = 100) -> list[dict[str, Any]]:
     with _METRICS_LOCK:
         return list(_LOGS)[-limit:]
+
+
+def start_trace(name: str, **fields: Any) -> dict[str, Any]:
+    trace = {
+        "trace_id": f"trc-{uuid4().hex[:12]}",
+        "name": name,
+        "status": "started",
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "finished_at": None,
+        "fields": fields,
+    }
+    with _METRICS_LOCK:
+        _TRACES.append(trace)
+    return trace
+
+
+def finish_trace(trace_id: str, status: str = "completed", **fields: Any) -> dict[str, Any]:
+    with _METRICS_LOCK:
+        for trace in reversed(_TRACES):
+            if trace["trace_id"] == trace_id:
+                trace["status"] = status
+                trace["finished_at"] = datetime.now(timezone.utc).isoformat()
+                trace["fields"].update(fields)
+                return dict(trace)
+    return {
+        "trace_id": trace_id,
+        "status": "unknown",
+        "finished_at": datetime.now(timezone.utc).isoformat(),
+        "fields": fields,
+    }
+
+
+def get_traces(limit: int = 100) -> list[dict[str, Any]]:
+    with _METRICS_LOCK:
+        return list(_TRACES)[-limit:]
 
 
 def metrics_as_prometheus() -> str:

@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>IoTron Dashboard</title>
+    <title>IoTron Operations Console</title>
     <link rel="stylesheet" href="/dashboard/assets/styles.css" />
   </head>
   <body>
@@ -11,51 +11,122 @@
     <div class="ambient ambient-b"></div>
     <main class="shell">
       <section class="hero">
-        <p class="eyebrow">IoTron Control Plane</p>
-        <h1>Embedded fleet orchestration with protocol-aware deployment.</h1>
-        <p class="lede">
-          Manage boards, transports, packages, and flashing workflows from one dashboard.
-        </p>
+        <div>
+          <p class="eyebrow">IoTron Operations Console</p>
+          <h1>Fleet control for boards, rollouts, telemetry, and recovery.</h1>
+          <p class="lede">Authenticate as an operator, inspect fleet health, search infrastructure objects, and drill into deployment workflows from one console.</p>
+        </div>
         <div class="hero-actions">
           <a href="/docs" class="button primary">API Docs</a>
           <button id="refresh" class="button secondary">Refresh Data</button>
         </div>
       </section>
 
+      <section class="auth-bar panel compact-panel">
+        <div class="panel-head compact-head">
+          <h2>Operator Session</h2>
+          <span id="auth-status" class="badge">Anonymous</span>
+        </div>
+        <div class="auth-controls">
+          <input id="token-input" class="input" type="password" placeholder="Paste operator bearer token" />
+          <button id="save-token" class="button secondary">Use Token</button>
+          <button id="clear-token" class="button ghost">Clear</button>
+          <input id="search-input" class="input search-input" type="search" placeholder="Search devices, deployments, packages, alerts" />
+          <select id="scope-filter" class="input select-input">
+            <option value="all">All views</option>
+            <option value="devices">Devices</option>
+            <option value="deployments">Deployments</option>
+            <option value="alerts">Alerts</option>
+            <option value="logs">Logs</option>
+            <option value="traces">Traces</option>
+          </select>
+        </div>
+      </section>
+
       <section class="grid summary-grid" id="summary-grid"></section>
+
+      <section class="workspace-grid">
+        <article class="panel main-panel">
+          <div class="panel-head">
+            <h2>Operations Workspace</h2>
+            <span class="badge">Live</span>
+          </div>
+          <div class="toolbar-row">
+            <button class="tab-button active" data-tab="devices">Devices</button>
+            <button class="tab-button" data-tab="deployments">Deployments</button>
+            <button class="tab-button" data-tab="alerts">Alerts</button>
+            <button class="tab-button" data-tab="logs">Logs</button>
+            <button class="tab-button" data-tab="traces">Traces</button>
+            <button class="tab-button" data-tab="toolchains">Toolchains</button>
+          </div>
+          <div id="active-list" class="list tall-list"></div>
+        </article>
+
+        <aside class="panel side-panel">
+          <div class="panel-head">
+            <h2>Detail Drilldown</h2>
+            <span class="badge">Selected</span>
+          </div>
+          <pre id="detail-view" class="code-block">Select an item to inspect workflow details.</pre>
+          <div class="panel-head inline-head">
+            <h2>Workflow Actions</h2>
+          </div>
+          <div id="workflow-actions" class="workflow-list"></div>
+        </aside>
+      </section>
 
       <section class="grid two-up">
         <article class="panel">
           <div class="panel-head">
-            <h2>Project State</h2>
-            <span class="badge">Live</span>
+            <h2>Topology</h2>
+            <span class="badge">Catalog</span>
           </div>
-          <pre id="project-state" class="code-block">Loading...</pre>
+          <div id="boards" class="chip-list"></div>
+          <div class="dual-list">
+            <div>
+              <h3>Protocols</h3>
+              <div id="protocols" class="list compact"></div>
+            </div>
+            <div>
+              <h3>Networks</h3>
+              <div id="networks" class="list compact"></div>
+            </div>
+          </div>
         </article>
+
         <article class="panel">
           <div class="panel-head">
-            <h2>Toolchains</h2>
-            <span class="badge">Detected</span>
+            <h2>Security and Tenancy</h2>
+            <span class="badge">Enterprise</span>
           </div>
-          <div id="toolchains" class="list"></div>
+          <div id="security-overview" class="list compact"></div>
+          <div class="inline-columns">
+            <div>
+              <h3>Tenants</h3>
+              <div id="tenants" class="chip-list"></div>
+            </div>
+            <div>
+              <h3>Notification Channels</h3>
+              <div id="notification-channels" class="list compact"></div>
+            </div>
+          </div>
         </article>
       </section>
 
       <section class="grid two-up">
         <article class="panel">
           <div class="panel-head">
-            <h2>Boards</h2>
-            <span class="badge">Catalog</span>
+            <h2>Project State</h2>
+            <span class="badge">Config</span>
           </div>
-          <div id="boards" class="chip-list"></div>
+          <pre id="project-state" class="code-block small-code">Loading...</pre>
         </article>
         <article class="panel">
           <div class="panel-head">
-            <h2>Protocols and Networks</h2>
-            <span class="badge">Stack</span>
+            <h2>Packages</h2>
+            <span class="badge">Installed</span>
           </div>
-          <div id="protocols" class="list compact"></div>
-          <div id="networks" class="list compact"></div>
+          <div id="packages" class="list compact"></div>
         </article>
       </section>
     </main>

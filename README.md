@@ -1,10 +1,7 @@
 # IoTron
 
-IoTron is an open-source IoT framework for building device-to-cloud workflows across embedded boards and edge systems. The repository now includes a Python control plane, a browser dashboard, production-oriented flashing and OTA workflows, backend device and telemetry APIs, a native runtime execution layer in `core/`, and Python/Go integration surfaces.
+IoTron is an open-source IoT framework for building device-to-cloud workflows across embedded boards and edge systems. The repository includes a Python control plane, a FastAPI backend, a browser operations console, production-oriented flashing and OTA workflows, a native runtime execution layer in `core/`, and Python/Go integration surfaces.
 
-## Version
-
-IoTron `v0.3.0` is the current first-release line of the framework. It establishes the control plane, native runtime interfaces, backend APIs, deployment workflows, and integration surface for board and protocol operations.
 
 ## Implemented Surfaces
 
@@ -16,7 +13,7 @@ IoTron `v0.3.0` is the current first-release line of the framework. It establish
 - Native Python and Go binding glue for compiled-library integration
 - CI, release, and security workflows for GitHub Actions
 - Operator/device bearer tokens, API key compatibility, audit logging, rate limiting, CORS control, and security headers
-- SQLite-backed persistence for packages, devices, telemetry, deployments, and audit trails
+- SQLite-backed persistence for packages, devices, telemetry, deployments, audit trails, tenancy, and RBAC
 
 ## Quick Start
 
@@ -36,6 +33,24 @@ Open:
 
 - Dashboard: `http://127.0.0.1:8000/dashboard`
 - API docs: `http://127.0.0.1:8000/docs`
+
+## Storage Model
+
+IoTron uses `vendor/iotron_state.db` as the active local backend. The database stores:
+
+- packages
+- devices
+- telemetry
+- deployments
+- audit records
+- tenants
+- RBAC policies
+- revoked tokens
+- notification channels
+
+Legacy files such as `vendor/installed_packages.db` and `vendor/runtime_state.json` are import-only compatibility sources for older installs. They are not the active persistence layer.
+
+The vendor directory is documented in [vendor/README.md](vendor/README.md).
 
 ## CLI Commands
 
@@ -67,9 +82,12 @@ export-config
 - `GET /health`
 - `GET /dashboard`
 - `GET /dashboard/data`
+- `GET /dashboard/summary`
 - `GET /backend/overview`
 - `GET /native/manifest`
 - `POST /auth/token`
+- `POST /auth/revoke`
+- `GET /security/metadata`
 - `GET /catalog/boards`
 - `GET /catalog/protocols`
 - `GET /catalog/networks`
@@ -82,9 +100,27 @@ export-config
 - `POST /telemetry`
 - `GET /deployments`
 - `GET /audit`
+- `GET /metrics`
+- `GET /logs`
+- `GET /traces`
+- `GET /alerts`
+- `POST /alerts/dispatch`
+- `GET /jobs`
+- `GET /jobs/{job_id}`
+- `GET /backups`
+- `POST /backups`
+- `POST /backups/restore`
+- `GET /dr/plan`
+- `GET /tenants`
+- `POST /tenants`
+- `GET /rbac/policies`
+- `POST /rbac/policies`
+- `GET /notifications/channels`
+- `POST /notifications/channels`
 - `POST /project/flash`
 - `POST /project/ota`
 - `POST /project/prune`
+- `POST /project/hardware-validate`
 - `POST /project/select-board`
 - `POST /project/enable-protocol`
 - `POST /project/enable-network`
@@ -101,6 +137,9 @@ Environment settings live in [.env.example](.env.example):
 - `IOTRON_API_KEY`: protects mutation endpoints when set
 - `IOTRON_BEARER_SECRET`: signing secret for operator and device tokens
 - `IOTRON_PREVIOUS_BEARER_SECRET`: previous signing secret used during token rotation
+- `IOTRON_OIDC_ISSUER`: expected issuer for external identity integration
+- `IOTRON_OIDC_AUDIENCE`: expected audience for external identity integration
+- `IOTRON_SECRET_FILE`: optional JSON secret file such as `vendor/secrets.json`
 - `IOTRON_ALLOWED_ORIGINS`: allowed browser origins for the API
 - `IOTRON_RATE_LIMIT_PER_MINUTE`: per-client request cap
 - `IOTRON_TOKEN_TTL_SECONDS`: operator token lifetime
@@ -109,6 +148,17 @@ Environment settings live in [.env.example](.env.example):
 - `IOTRON_NATIVE_LIB`: compiled native library path for Python binding use
 
 CI and release automation live in `.github/workflows/`.
+
+## Vendor Layout
+
+```text
+vendor/
+  iotron_state.db
+  backups/
+  README.md
+```
+
+Optional legacy compatibility files may appear during migration, but the SQLite database is the authoritative store.
 
 ## Backend SDKs
 
@@ -132,7 +182,7 @@ Native builds:
 - `CMakeLists.txt` provides a shared-library build target for environments with CMake and a C++ compiler.
 - `scripts/build_native.py` provides a direct build path for `g++`, `clang++`, or MSVC `cl`.
 
-This release provides the native runtime structure, shared-library interfaces, and board integration workflow. Hardware validation and vendor-tool execution still depend on the toolchains and devices installed in the target environment.
+The native runtime, shared-library interfaces, and board integration workflow are built around the backend control plane and SQLite vendor store. Hardware validation and vendor-tool execution still depend on the toolchains and devices installed in the target environment.
 
 ## Roadmap
 
@@ -142,4 +192,4 @@ The next areas of expansion for the framework are:
 - end-to-end protocol I/O against real buses and brokers, beyond lifecycle/session supervision
 - signed OTA rollout workflow and artifact verification
 - richer identity integration such as RBAC backed by OIDC or external IAM
-- a full multi-page frontend dashboard with auth and device actions
+- deeper live integration with external IdPs and distributed worker infrastructure

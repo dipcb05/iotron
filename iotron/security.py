@@ -17,6 +17,9 @@ from fastapi import Header, HTTPException, Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse, Response
 
+from .secrets import available_secret_sources, load_secret
+from .storage import is_token_revoked, list_rbac_policies
+
 
 @dataclass(frozen=True)
 class SecuritySettings:
@@ -27,19 +30,23 @@ class SecuritySettings:
     previous_bearer_secret: str | None
     token_ttl_seconds: int
     device_token_ttl_seconds: int
+    oidc_issuer: str | None
+    oidc_audience: str | None
 
 
 def load_security_settings() -> SecuritySettings:
     origins = os.getenv("IOTRON_ALLOWED_ORIGINS", "http://127.0.0.1:8000,http://localhost:8000")
-    bearer_secret = os.getenv("IOTRON_BEARER_SECRET") or os.getenv("IOTRON_API_KEY") or "iotron-dev-secret"
+    bearer_secret = load_secret("IOTRON_BEARER_SECRET", os.getenv("IOTRON_API_KEY") or "iotron-dev-secret")
     return SecuritySettings(
         api_key=os.getenv("IOTRON_API_KEY") or None,
         allowed_origins=[item.strip() for item in origins.split(",") if item.strip()],
         requests_per_minute=int(os.getenv("IOTRON_RATE_LIMIT_PER_MINUTE", "120")),
-        bearer_secret=bearer_secret,
-        previous_bearer_secret=os.getenv("IOTRON_PREVIOUS_BEARER_SECRET") or None,
+        bearer_secret=bearer_secret or "iotron-dev-secret",
+        previous_bearer_secret=load_secret("IOTRON_PREVIOUS_BEARER_SECRET"),
         token_ttl_seconds=int(os.getenv("IOTRON_TOKEN_TTL_SECONDS", "3600")),
         device_token_ttl_seconds=int(os.getenv("IOTRON_DEVICE_TOKEN_TTL_SECONDS", "86400")),
+        oidc_issuer=os.getenv("IOTRON_OIDC_ISSUER") or None,
+        oidc_audience=os.getenv("IOTRON_OIDC_AUDIENCE") or None,
     )
 
 
@@ -88,6 +95,7 @@ def issue_token(
     payload = {
         "sub": subject,
         "role": role,
+        "tenant_id": "default",
         "device_id": device_id,
         "scopes": scopes or [],
         "iat": int(time.time()),
@@ -107,6 +115,8 @@ def verify_token(token: str) -> dict[str, Any]:
             continue
         if payload["exp"] < int(time.time()):
             raise HTTPException(status_code=401, detail="Token expired")
+        if is_token_revoked(payload["jti"]):
+            raise HTTPException(status_code=401, detail="Token revoked")
         return payload
     raise HTTPException(status_code=401, detail="Invalid bearer token")
 
@@ -141,6 +151,7 @@ async def require_operator(x_api_key: str | None = Header(default=None), authori
     payload = verify_token(token)
     if payload.get("role") not in {"admin", "operator"}:
         raise HTTPException(status_code=403, detail="Operator role required")
+    ensure_permission(payload, "devices:write")
     payload["auth_type"] = "bearer"
     return payload
 
@@ -153,8 +164,32 @@ async def require_device_identity(
     payload = verify_token(token)
     if payload.get("role") != "device" or not payload.get("device_id"):
         raise HTTPException(status_code=403, detail="Device token required")
+    ensure_permission(payload, "telemetry:write")
     payload["auth_type"] = "device"
     return payload
+
+
+def ensure_permission(identity: dict[str, Any], permission: str) -> None:
+    policies = {item["role"]: set(item["permissions"]) for item in list_rbac_policies()}
+    granted = policies.get(identity.get("role"), set())
+    if "*" in granted or permission in granted:
+        return
+    if permission in set(identity.get("scopes", [])):
+        return
+    raise HTTPException(status_code=403, detail=f"Permission '{permission}' required")
+
+
+def security_metadata() -> dict[str, Any]:
+    settings = load_security_settings()
+    return {
+        "auth_modes": ["api_key", "bearer_operator", "bearer_device"],
+        "secret_sources": available_secret_sources(),
+        "oidc": {
+            "issuer": settings.oidc_issuer,
+            "audience": settings.oidc_audience,
+            "configured": bool(settings.oidc_issuer and settings.oidc_audience),
+        },
+    }
 
 
 def _extract_bearer_token(authorization: str | None) -> str:

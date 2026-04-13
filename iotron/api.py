@@ -48,6 +48,29 @@ class NameRequest(BaseModel):
     name: str = Field(..., min_length=1)
 
 
+class TenantRequest(BaseModel):
+    tenant_id: str = Field(..., min_length=2)
+    name: str = Field(..., min_length=2)
+
+
+class RBACPolicyRequest(BaseModel):
+    role: str = Field(..., min_length=2)
+    permissions: list[str] = Field(default_factory=list)
+
+
+class TokenRevokeRequest(BaseModel):
+    token: str = Field(..., min_length=16)
+    reason: str = Field(default="manual_revocation", min_length=3)
+
+
+class NotificationChannelRequest(BaseModel):
+    channel_id: str = Field(..., min_length=2)
+    channel_type: str = Field(..., min_length=2)
+    target: str = Field(..., min_length=2)
+    enabled: bool = True
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
 class BackupRestoreRequest(BaseModel):
     backup_id: str = Field(..., min_length=4)
 
@@ -96,6 +119,15 @@ class OTARequest(BaseModel):
     rollback_artifact: str | None = None
 
 
+class HardwareValidationRequest(BaseModel):
+    board: str = Field(..., min_length=2)
+    artifact: str = Field(..., min_length=1)
+    port: str | None = None
+    fqbn: str | None = None
+    host: str | None = None
+    async_job: bool = False
+
+
 class AIPlanRequest(BaseModel):
     goal: str = Field(..., min_length=5)
     board: str | None = None
@@ -134,9 +166,19 @@ def logs(limit: int = 100, identity: dict[str, object] = Depends(require_operato
     return service.get_logs(limit=limit)
 
 
+@app.get("/traces")
+def traces(limit: int = 100, identity: dict[str, object] = Depends(require_operator)) -> list[dict[str, object]]:
+    return service.get_traces(limit=limit)
+
+
 @app.get("/alerts")
 def alerts(identity: dict[str, object] = Depends(require_operator)) -> list[dict[str, object]]:
     return service.get_alerts()
+
+
+@app.post("/alerts/dispatch")
+def alerts_dispatch(identity: dict[str, object] = Depends(require_operator)) -> list[dict[str, object]]:
+    return service.dispatch_notifications(actor=str(identity["sub"]))
 
 
 @app.get("/dashboard")
@@ -154,9 +196,19 @@ def auth_token(payload: TokenRequest, identity: dict[str, object] = Depends(requ
     return service.issue_operator_token(payload.subject, role=payload.role, actor=str(identity["sub"]))
 
 
+@app.post("/auth/revoke")
+def auth_revoke(payload: TokenRevokeRequest, identity: dict[str, object] = Depends(require_operator)) -> dict[str, object]:
+    return service.revoke_token(payload.token, reason=payload.reason, actor=str(identity["sub"]))
+
+
 @app.get("/backend/overview")
 def backend_overview() -> dict[str, object]:
     return service.backend_overview()
+
+
+@app.get("/security/metadata")
+def security_metadata(identity: dict[str, object] = Depends(require_operator)) -> dict[str, object]:
+    return service.security_metadata()
 
 
 @app.get("/native/manifest")
@@ -192,6 +244,46 @@ def packages() -> list[dict[str, str]]:
 @app.get("/devices")
 def devices() -> list[dict[str, object]]:
     return service.list_devices()
+
+
+@app.get("/tenants")
+def tenants(identity: dict[str, object] = Depends(require_operator)) -> list[dict[str, object]]:
+    return service.list_tenants()
+
+
+@app.post("/tenants")
+def create_tenant(payload: TenantRequest, identity: dict[str, object] = Depends(require_operator)) -> dict[str, object]:
+    return service.create_tenant(payload.tenant_id, payload.name, actor=str(identity["sub"]))
+
+
+@app.get("/rbac/policies")
+def rbac_policies(identity: dict[str, object] = Depends(require_operator)) -> list[dict[str, object]]:
+    return service.list_rbac_policies()
+
+
+@app.post("/rbac/policies")
+def set_rbac(payload: RBACPolicyRequest, identity: dict[str, object] = Depends(require_operator)) -> dict[str, object]:
+    return service.set_rbac_policy(payload.role, payload.permissions, actor=str(identity["sub"]))
+
+
+@app.get("/notifications/channels")
+def notification_channels(identity: dict[str, object] = Depends(require_operator)) -> list[dict[str, object]]:
+    return service.list_notification_channels()
+
+
+@app.post("/notifications/channels")
+def create_notification(
+    payload: NotificationChannelRequest,
+    identity: dict[str, object] = Depends(require_operator),
+) -> dict[str, object]:
+    return service.create_notification_channel(
+        channel_id=payload.channel_id,
+        channel_type=payload.channel_type,
+        target=payload.target,
+        enabled=payload.enabled,
+        metadata=payload.metadata,
+        actor=str(identity["sub"]),
+    )
 
 
 @app.get("/deployments")
@@ -391,6 +483,33 @@ def ota(payload: OTARequest, identity: dict[str, object] = Depends(require_opera
 @app.post("/project/prune")
 def prune_runtime(limit: int = 1000, identity: dict[str, object] = Depends(require_operator)) -> dict[str, object]:
     return service.prune_runtime_data(retain_latest_per_device=limit, actor=str(identity["sub"]))
+
+
+@app.post("/project/hardware-validate")
+def hardware_validate(
+    payload: HardwareValidationRequest,
+    identity: dict[str, object] = Depends(require_operator),
+) -> dict[str, object]:
+    if payload.async_job:
+        return service.schedule_hardware_validation(
+            board=payload.board,
+            artifact=payload.artifact,
+            port=payload.port,
+            fqbn=payload.fqbn,
+            host=payload.host,
+            actor=str(identity["sub"]),
+        )
+    try:
+        return service.validate_hardware(
+            board=payload.board,
+            artifact=payload.artifact,
+            port=payload.port,
+            fqbn=payload.fqbn,
+            host=payload.host,
+            actor=str(identity["sub"]),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/dashboard/summary")
