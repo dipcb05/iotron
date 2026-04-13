@@ -8,9 +8,12 @@ from typing import Any
 from .ai import build_project_plan
 from .catalog import BOARD_FAMILIES, NETWORKS, PROTOCOLS, list_boards
 from .hardware_lab import run_hardware_validation
+from .oidc import exchange_external_token, fetch_discovery_document, oidc_metadata
 from .observability import get_logs, get_metrics, log_event, metrics_as_prometheus, record_metric, set_metric
 from .observability import finish_trace, get_traces, start_trace
 from .operations import (
+    claim_job,
+    complete_job,
     create_backup,
     disaster_recovery_plan,
     dispatch_notifications,
@@ -20,7 +23,9 @@ from .operations import (
     list_jobs,
     restore_backup,
     submit_job,
+    worker_metadata,
 )
+from .protocol_io import protocol_capabilities, protocol_exchange
 from .security import issue_device_token, issue_operator_token, security_metadata, verify_token
 from .storage import (
     create_notification_channel,
@@ -48,6 +53,7 @@ from .toolchains import (
     confirm_device_health,
     execute_plan,
     list_toolchains,
+    verify_ota_rollout_bundle,
 )
 
 
@@ -88,6 +94,23 @@ class IoTronService:
 
     def list_networks(self) -> dict[str, dict[str, str]]:
         return NETWORKS
+
+    def protocol_capabilities(self) -> dict[str, dict[str, Any]]:
+        return protocol_capabilities()
+
+    def protocol_exchange(
+        self,
+        protocol: str,
+        target: str,
+        operation: str,
+        payload: dict[str, Any] | None = None,
+        actor: str = "system",
+    ) -> dict[str, Any]:
+        trace = start_trace("protocol_exchange", protocol=protocol, target=target, operation=operation, actor=actor)
+        result = protocol_exchange(protocol=protocol, target=target, operation=operation, payload=payload or {})
+        finish_trace(trace["trace_id"], status="completed", protocol=protocol, target=target)
+        self._log(actor, "protocol_exchange", "protocol", protocol, {"target": target, "operation": operation})
+        return result
 
     def list_toolchains(self) -> list[dict[str, Any]]:
         return list_toolchains()
@@ -136,7 +159,16 @@ class IoTronService:
         metadata = security_metadata()
         metadata["rbac_policies"] = self.list_rbac_policies()
         metadata["tenant_count"] = len(self.list_tenants())
+        metadata["providers"] = oidc_metadata()
         return metadata
+
+    def oidc_discovery(self) -> dict[str, Any]:
+        return fetch_discovery_document()
+
+    def exchange_external_identity(self, token: str, actor: str = "system") -> dict[str, Any]:
+        identity = exchange_external_token(token)
+        self._log(actor, "exchange_external_identity", "identity", str(identity["sub"]), {"issuer": identity.get("issuer")})
+        return identity
 
     def list_notification_channels(self) -> list[dict[str, Any]]:
         return list_notification_channels()
@@ -206,6 +238,15 @@ class IoTronService:
 
     def get_job(self, job_id: str) -> dict[str, Any]:
         return get_job(job_id)
+
+    def claim_job(self, worker_id: str) -> dict[str, Any] | None:
+        return claim_job(worker_id)
+
+    def complete_job(self, job_id: str, result: Any = None, error: str | None = None) -> dict[str, Any]:
+        return complete_job(job_id, result=result, error=error)
+
+    def worker_metadata(self) -> dict[str, Any]:
+        return worker_metadata()
 
     def validate_hardware(
         self,
@@ -347,6 +388,7 @@ class IoTronService:
             "protocols": self.list_protocols(),
             "networks": self.list_networks(),
             "toolchains": self.list_toolchains(),
+            "protocol_capabilities": self.protocol_capabilities(),
             "packages": self.list_packages(),
             "devices": self.list_devices(),
             "telemetry": self.list_telemetry(limit=25),
@@ -489,6 +531,7 @@ class IoTronService:
         )
         if execute:
             plan = execute_plan(plan)
+        plan["rollout_verification"] = verify_ota_rollout_bundle(plan.get("rollout_bundle", {}))
         self._record_deployment(plan, actor=actor)
         record_metric("deployments.ota", 1)
         return plan
@@ -526,6 +569,7 @@ class IoTronService:
                 "alerts": len(self.get_alerts()),
                 "backups": len(self.list_backups()),
                 "notification_channels": len(self.list_notification_channels()),
+                "worker_backend": self.worker_metadata(),
             },
         }
 

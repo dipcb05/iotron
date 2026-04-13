@@ -17,6 +17,7 @@ from fastapi import Header, HTTPException, Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse, Response
 
+from .oidc import exchange_external_token, oidc_metadata, verify_external_token
 from .secrets import available_secret_sources, load_secret
 from .storage import is_token_revoked, list_rbac_policies
 
@@ -118,6 +119,13 @@ def verify_token(token: str) -> dict[str, Any]:
         if is_token_revoked(payload["jti"]):
             raise HTTPException(status_code=401, detail="Token revoked")
         return payload
+    try:
+        external = exchange_external_token(token)
+        external["auth_type"] = "oidc"
+        external.setdefault("jti", f"external:{external['sub']}")
+        return external
+    except ValueError:
+        pass
     raise HTTPException(status_code=401, detail="Invalid bearer token")
 
 
@@ -182,13 +190,9 @@ def ensure_permission(identity: dict[str, Any], permission: str) -> None:
 def security_metadata() -> dict[str, Any]:
     settings = load_security_settings()
     return {
-        "auth_modes": ["api_key", "bearer_operator", "bearer_device"],
+        "auth_modes": ["api_key", "bearer_operator", "bearer_device", "oidc_bearer"],
         "secret_sources": available_secret_sources(),
-        "oidc": {
-            "issuer": settings.oidc_issuer,
-            "audience": settings.oidc_audience,
-            "configured": bool(settings.oidc_issuer and settings.oidc_audience),
-        },
+        "oidc": {**oidc_metadata(), "issuer": settings.oidc_issuer, "audience": settings.oidc_audience},
     }
 
 

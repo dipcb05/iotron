@@ -7,13 +7,14 @@ IoTron is an open-source IoT framework for building device-to-cloud workflows ac
 
 - Python CLI for package, board, protocol, network, flash, OTA, and AI planning workflows
 - FastAPI control plane with dashboard, catalog, device registry, telemetry ingestion, flashing, OTA, package, and planning endpoints
+- Live protocol exchange adapters for HTTP, TCP, UDP, MQTT, WebSocket, serial, and I2C with optional runtime dependencies
 - Static dashboard UI served from FastAPI at `/dashboard`
-- Board toolchain integration with artifact validation, staged rollout metadata, rollback targets, signing, and health-confirmation workflow support
+- Board toolchain integration with artifact validation, signed OTA rollout bundles, staged rollout metadata, rollback targets, and health-confirmation workflow support
 - Native `core/` runtime layer with device lifecycle supervision, protocol sessions, network sessions, buffering, retry policy, storage descriptors, and a C ABI for shared-library builds
 - Native Python and Go binding glue for compiled-library integration
 - CI, release, and security workflows for GitHub Actions
-- Operator/device bearer tokens, API key compatibility, audit logging, rate limiting, CORS control, and security headers
-- SQLite-backed persistence for packages, devices, telemetry, deployments, audit trails, tenancy, and RBAC
+- Operator/device bearer tokens, API key compatibility, OIDC external-token exchange, audit logging, rate limiting, CORS control, and security headers
+- SQLite-backed persistence for packages, devices, telemetry, deployments, audit trails, tenancy, RBAC, revocations, notifications, and durable jobs
 
 ## Quick Start
 
@@ -87,11 +88,15 @@ export-config
 - `GET /native/manifest`
 - `POST /auth/token`
 - `POST /auth/revoke`
+- `POST /auth/exchange-external`
 - `GET /security/metadata`
+- `GET /identity/discovery`
 - `GET /catalog/boards`
 - `GET /catalog/protocols`
 - `GET /catalog/networks`
 - `GET /catalog/toolchains`
+- `GET /protocols/capabilities`
+- `POST /protocols/exchange`
 - `GET /devices`
 - `POST /devices/register`
 - `POST /devices/heartbeat`
@@ -107,6 +112,9 @@ export-config
 - `POST /alerts/dispatch`
 - `GET /jobs`
 - `GET /jobs/{job_id}`
+- `GET /workers/metadata`
+- `POST /workers/claim`
+- `POST /jobs/{job_id}/complete`
 - `GET /backups`
 - `POST /backups`
 - `POST /backups/restore`
@@ -139,6 +147,10 @@ Environment settings live in [.env.example](.env.example):
 - `IOTRON_PREVIOUS_BEARER_SECRET`: previous signing secret used during token rotation
 - `IOTRON_OIDC_ISSUER`: expected issuer for external identity integration
 - `IOTRON_OIDC_AUDIENCE`: expected audience for external identity integration
+- `IOTRON_OIDC_SHARED_SECRET`: HS256 verification secret for external-token exchange in local or controlled environments
+- `IOTRON_OIDC_ROLE_CLAIM`: claim used to derive IoTron RBAC role
+- `IOTRON_OIDC_TENANT_CLAIM`: claim used to derive tenant identity
+- `IOTRON_OIDC_JWKS_URL`: external JWKS endpoint metadata hook
 - `IOTRON_SECRET_FILE`: optional JSON secret file such as `vendor/secrets.json`
 - `IOTRON_ALLOWED_ORIGINS`: allowed browser origins for the API
 - `IOTRON_RATE_LIMIT_PER_MINUTE`: per-client request cap
@@ -146,6 +158,8 @@ Environment settings live in [.env.example](.env.example):
 - `IOTRON_DEVICE_TOKEN_TTL_SECONDS`: device token lifetime
 - `IOTRON_ARTIFACT_SIGNING_KEY`: signing key for deployment artifact manifests
 - `IOTRON_NATIVE_LIB`: compiled native library path for Python binding use
+- `IOTRON_WORKER_BACKEND`: `local`, `sqlite`, or `remote`
+- `IOTRON_REMOTE_WORKER_URL`: remote worker coordinator URL when using external orchestration
 
 CI and release automation live in `.github/workflows/`.
 
@@ -163,8 +177,56 @@ Optional legacy compatibility files may appear during migration, but the SQLite 
 ## Backend SDKs
 
 - FastAPI is the primary backend API layer and now exposes operator auth, device registry, telemetry ingestion, deployment tracking, audit logs, backend overview, and runtime manifest endpoints.
+- Protocol exchange endpoints expose live transport operations for supported adapters, with optional broker and bus dependencies loaded at runtime.
 - Go support lives in [bindings/go/iotron.go](bindings/go/iotron.go) as a backend client for health checks, state, auth token issuance, deployments, toolchains, device registration, telemetry, flash, and OTA operations.
 - Python native binding helpers live in [bindings/python/iotron.py](bindings/python/iotron.py) and can load a compiled shared library via `IOTRON_NATIVE_LIB`.
+
+## Identity and Workers
+
+IoTron now supports two identity paths:
+
+- native bearer tokens signed by IoTron
+- external bearer tokens exchanged through OIDC/IAM claim mapping
+
+The external identity path currently supports HS256 verification through `IOTRON_OIDC_SHARED_SECRET`, issuer and audience validation, role claim mapping, and tenant claim mapping. Discovery integration is exposed through `/identity/discovery`.
+
+Worker execution now supports:
+
+- `local`: in-process thread executor
+- `sqlite`: durable queued jobs stored in `vendor/iotron_state.db` and claimable by external workers
+- `remote`: external coordinator mode using the same durable SQLite queue metadata plus remote endpoint configuration
+
+Worker endpoints:
+
+- `GET /workers/metadata`
+- `POST /workers/claim`
+- `POST /jobs/{job_id}/complete`
+
+## Protocol I/O
+
+The control plane can perform direct protocol exchanges through `/protocols/exchange` for:
+
+- HTTP
+- TCP
+- UDP
+- MQTT
+- WebSocket
+- serial
+- I2C
+
+HTTP, TCP, and UDP work with the current dependency set. MQTT, WebSocket, serial, and I2C require their respective client libraries and host access to the target broker or bus.
+
+## OTA Signing
+
+OTA plans now include a signed rollout bundle in addition to the artifact manifest. The bundle signs:
+
+- artifact digest
+- destination host and path
+- rollout policy
+- rollback artifact reference
+- rollout channel
+
+Execution verifies both the artifact manifest and the rollout bundle before dispatch.
 
 ## Native Runtime
 

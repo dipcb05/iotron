@@ -158,6 +158,19 @@ def _migrate(connection: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS jobs (
+            job_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            backend TEXT NOT NULL,
+            status TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            result_json TEXT,
+            error TEXT,
+            submitted_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            claimed_by TEXT
+        );
+
         CREATE INDEX IF NOT EXISTS idx_telemetry_device_recorded_at
         ON telemetry(device_id, recorded_at DESC);
 
@@ -547,3 +560,86 @@ def list_notification_channels() -> list[dict[str, Any]]:
         item["enabled"] = bool(item["enabled"])
         payload.append(item)
     return payload
+
+
+def save_job(record: dict[str, Any]) -> dict[str, Any]:
+    with _db() as connection:
+        connection.execute(
+            """
+            INSERT OR REPLACE INTO jobs(
+                job_id, name, backend, status, payload_json, result_json, error,
+                submitted_at, updated_at, claimed_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record["job_id"],
+                record["name"],
+                record["backend"],
+                record["status"],
+                json.dumps(record.get("payload", {})),
+                json.dumps(record["result"]) if record.get("result") is not None else None,
+                record.get("error"),
+                record["submitted_at"],
+                record["updated_at"],
+                record.get("claimed_by"),
+            ),
+        )
+    return record
+
+
+def get_job_record(job_id: str) -> dict[str, Any] | None:
+    with _db() as connection:
+        row = connection.execute(
+            """
+            SELECT job_id, name, backend, status, payload_json, result_json, error, submitted_at, updated_at, claimed_by
+            FROM jobs WHERE job_id = ?
+            """,
+            (job_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    item = dict(row)
+    item["payload"] = json.loads(item.pop("payload_json") or "{}")
+    item["result"] = json.loads(item.pop("result_json")) if item.get("result_json") else None
+    item.pop("result_json", None)
+    return item
+
+
+def list_job_records(limit: int = 100) -> list[dict[str, Any]]:
+    with _db() as connection:
+        rows = connection.execute(
+            """
+            SELECT job_id, name, backend, status, payload_json, result_json, error, submitted_at, updated_at, claimed_by
+            FROM jobs ORDER BY updated_at DESC LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    payload = []
+    for row in rows:
+        item = dict(row)
+        item["payload"] = json.loads(item.pop("payload_json") or "{}")
+        item["result"] = json.loads(item.pop("result_json")) if item.get("result_json") else None
+        item.pop("result_json", None)
+        payload.append(item)
+    return payload
+
+
+def claim_next_job(worker_id: str, backend: str = "sqlite") -> dict[str, Any] | None:
+    with _db() as connection:
+        row = connection.execute(
+            """
+            SELECT job_id, name, backend, status, payload_json, result_json, error, submitted_at, updated_at, claimed_by
+            FROM jobs
+            WHERE status = 'queued' AND backend = ?
+            ORDER BY submitted_at ASC
+            LIMIT 1
+            """,
+            (backend,),
+        ).fetchone()
+        if row is None:
+            return None
+        connection.execute(
+            "UPDATE jobs SET status = ?, claimed_by = ?, updated_at = datetime('now') WHERE job_id = ?",
+            ("running", worker_id, row["job_id"]),
+        )
+    return get_job_record(row["job_id"])

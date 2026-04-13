@@ -6,22 +6,48 @@ import shutil
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
 from .observability import log_event, record_metric
-from .storage import CONFIG_PATH, SQLITE_DB_PATH, list_notification_channels, project_root
+from .storage import (
+    CONFIG_PATH,
+    SQLITE_DB_PATH,
+    claim_next_job,
+    get_job_record,
+    list_job_records,
+    list_notification_channels,
+    project_root,
+    save_job,
+)
 
 _EXECUTOR = ThreadPoolExecutor(max_workers=4)
 _JOBS_LOCK = threading.RLock()
 _JOBS: dict[str, dict[str, Any]] = {}
+_LOCAL_HANDLERS: dict[str, Callable[..., Any]] = {}
 
 
 def submit_job(name: str, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> dict[str, Any]:
     job_id = f"job-{uuid4().hex[:12]}"
     submitted_at = datetime.now(timezone.utc).isoformat()
-    future = _EXECUTOR.submit(fn, *args, **kwargs)
+    backend = os.getenv("IOTRON_WORKER_BACKEND", "local").strip().lower() or "local"
+    record = {
+        "job_id": job_id,
+        "name": name,
+        "backend": "sqlite" if backend in {"sqlite", "remote"} else "local",
+        "status": "queued",
+        "payload": {"args": list(args), "kwargs": kwargs},
+        "result": None,
+        "error": None,
+        "submitted_at": submitted_at,
+        "updated_at": submitted_at,
+        "claimed_by": None,
+    }
+    save_job(record)
+    _LOCAL_HANDLERS[job_id] = fn
+    future = _EXECUTOR.submit(_execute_local_job, job_id, fn, *args, **kwargs) if backend == "local" else None
     with _JOBS_LOCK:
         _JOBS[job_id] = {
             "job_id": job_id,
@@ -29,30 +55,68 @@ def submit_job(name: str, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> 
             "status": "queued",
             "submitted_at": submitted_at,
             "future": future,
+            "backend": record["backend"],
         }
     record_metric("jobs.submitted", 1)
-    log_event("info", "job_submitted", job_id=job_id, name=name)
-    return {"job_id": job_id, "name": name, "status": "queued", "submitted_at": submitted_at}
+    log_event("info", "job_submitted", job_id=job_id, name=name, backend=record["backend"])
+    return {"job_id": job_id, "name": name, "status": "queued", "submitted_at": submitted_at, "backend": record["backend"]}
 
 
 def list_jobs() -> list[dict[str, Any]]:
+    jobs = {item["job_id"]: item for item in list_job_records(limit=200)}
     with _JOBS_LOCK:
-        jobs = []
         for job in _JOBS.values():
             payload = dict(job)
             future = payload.pop("future")
-            payload.update(_future_status(future))
-            jobs.append(payload)
-        return sorted(jobs, key=lambda item: item["submitted_at"], reverse=True)
+            if future is not None:
+                payload.update(_future_status(future))
+            jobs[payload["job_id"]] = {**jobs.get(payload["job_id"], {}), **payload}
+    return sorted(jobs.values(), key=lambda item: item["submitted_at"], reverse=True)
 
 
 def get_job(job_id: str) -> dict[str, Any]:
+    durable = get_job_record(job_id)
     with _JOBS_LOCK:
-        job = _JOBS[job_id]
+        job = _JOBS.get(job_id)
+        if job is None:
+            if durable is None:
+                raise KeyError(job_id)
+            return durable
         payload = dict(job)
         future = payload.pop("future")
-        payload.update(_future_status(future))
-        return payload
+        if future is not None:
+            payload.update(_future_status(future))
+        return {**(durable or {}), **payload}
+
+
+def claim_job(worker_id: str) -> dict[str, Any] | None:
+    job = claim_next_job(worker_id)
+    if job:
+        log_event("info", "job_claimed", job_id=job["job_id"], worker_id=worker_id)
+    return job
+
+
+def complete_job(job_id: str, result: Any = None, error: str | None = None) -> dict[str, Any]:
+    record = get_job_record(job_id)
+    if record is None:
+        raise KeyError(job_id)
+    record["status"] = "failed" if error else "completed"
+    record["result"] = result
+    record["error"] = error
+    record["updated_at"] = datetime.now(timezone.utc).isoformat()
+    save_job(record)
+    log_event("info" if not error else "error", "job_completed", job_id=job_id, status=record["status"])
+    return record
+
+
+def worker_metadata() -> dict[str, Any]:
+    backend = os.getenv("IOTRON_WORKER_BACKEND", "local").strip().lower() or "local"
+    return {
+        "backend": backend,
+        "distributed": backend in {"sqlite", "remote"},
+        "queue": "sqlite.jobs" if backend in {"sqlite", "remote"} else "in_process",
+        "remote_endpoint": os.getenv("IOTRON_REMOTE_WORKER_URL"),
+    }
 
 
 def create_backup() -> dict[str, Any]:
@@ -169,3 +233,19 @@ def _future_status(future: Future[Any]) -> dict[str, Any]:
     except Exception as exc:  # pragma: no cover
         return {"status": "failed", "error": str(exc)}
     return {"status": "completed", "result": result}
+
+
+def _execute_local_job(job_id: str, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    record = get_job_record(job_id)
+    if record:
+        record["status"] = "running"
+        record["claimed_by"] = "local-executor"
+        record["updated_at"] = datetime.now(timezone.utc).isoformat()
+        save_job(record)
+    try:
+        result = fn(*args, **kwargs)
+    except Exception as exc:
+        complete_job(job_id, error=str(exc))
+        raise
+    complete_job(job_id, result=result)
+    return result

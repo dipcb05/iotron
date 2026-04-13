@@ -29,7 +29,7 @@ std::string value_or_empty(const char* value) {
     return value == nullptr ? std::string() : std::string(value);
 }
 
-}  // namespace
+} 
 
 extern "C" {
 

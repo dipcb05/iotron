@@ -63,6 +63,10 @@ class TokenRevokeRequest(BaseModel):
     reason: str = Field(default="manual_revocation", min_length=3)
 
 
+class ExternalTokenExchangeRequest(BaseModel):
+    token: str = Field(..., min_length=16)
+
+
 class NotificationChannelRequest(BaseModel):
     channel_id: str = Field(..., min_length=2)
     channel_type: str = Field(..., min_length=2)
@@ -126,6 +130,22 @@ class HardwareValidationRequest(BaseModel):
     fqbn: str | None = None
     host: str | None = None
     async_job: bool = False
+
+
+class WorkerClaimRequest(BaseModel):
+    worker_id: str = Field(..., min_length=2)
+
+
+class WorkerCompleteRequest(BaseModel):
+    result: dict[str, object] | None = None
+    error: str | None = None
+
+
+class ProtocolExchangeRequest(BaseModel):
+    protocol: str = Field(..., min_length=2)
+    target: str = Field(..., min_length=2)
+    operation: str = Field(..., min_length=2)
+    payload: dict[str, object] = Field(default_factory=dict)
 
 
 class AIPlanRequest(BaseModel):
@@ -201,6 +221,14 @@ def auth_revoke(payload: TokenRevokeRequest, identity: dict[str, object] = Depen
     return service.revoke_token(payload.token, reason=payload.reason, actor=str(identity["sub"]))
 
 
+@app.post("/auth/exchange-external")
+def auth_exchange_external(payload: ExternalTokenExchangeRequest) -> dict[str, object]:
+    try:
+        return service.exchange_external_identity(payload.token, actor="external-idp")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/backend/overview")
 def backend_overview() -> dict[str, object]:
     return service.backend_overview()
@@ -209,6 +237,14 @@ def backend_overview() -> dict[str, object]:
 @app.get("/security/metadata")
 def security_metadata(identity: dict[str, object] = Depends(require_operator)) -> dict[str, object]:
     return service.security_metadata()
+
+
+@app.get("/identity/discovery")
+def identity_discovery(identity: dict[str, object] = Depends(require_operator)) -> dict[str, object]:
+    try:
+        return service.oidc_discovery()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/native/manifest")
@@ -224,6 +260,25 @@ def boards(family: str | None = None) -> list[dict[str, str]]:
 @app.get("/catalog/protocols")
 def protocols() -> dict[str, dict[str, str]]:
     return service.list_protocols()
+
+
+@app.get("/protocols/capabilities")
+def protocol_capabilities() -> dict[str, dict[str, object]]:
+    return service.protocol_capabilities()
+
+
+@app.post("/protocols/exchange")
+def protocol_exchange(payload: ProtocolExchangeRequest, identity: dict[str, object] = Depends(require_operator)) -> dict[str, object]:
+    try:
+        return service.protocol_exchange(
+            protocol=payload.protocol,
+            target=payload.target,
+            operation=payload.operation,
+            payload=payload.payload,
+            actor=str(identity["sub"]),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/catalog/networks")
@@ -294,6 +349,21 @@ def deployments(limit: int = 100) -> list[dict[str, object]]:
 @app.get("/jobs")
 def jobs(identity: dict[str, object] = Depends(require_operator)) -> list[dict[str, object]]:
     return service.list_jobs()
+
+
+@app.get("/workers/metadata")
+def workers_metadata(identity: dict[str, object] = Depends(require_operator)) -> dict[str, object]:
+    return service.worker_metadata()
+
+
+@app.post("/workers/claim")
+def workers_claim(payload: WorkerClaimRequest, identity: dict[str, object] = Depends(require_operator)) -> dict[str, object] | None:
+    return service.claim_job(payload.worker_id)
+
+
+@app.post("/jobs/{job_id}/complete")
+def complete_job(job_id: str, payload: WorkerCompleteRequest, identity: dict[str, object] = Depends(require_operator)) -> dict[str, object]:
+    return service.complete_job(job_id, result=payload.result, error=payload.error)
 
 
 @app.get("/jobs/{job_id}")

@@ -167,6 +167,14 @@ def build_ota_plan(
     validation = validate_artifact(artifact_path)
     deployment_id = f"dep-{uuid4().hex[:12]}"
     command = [executable or "scp", str(artifact_path), f"{username}@{host}:{destination}/"]
+    rollout_bundle = build_ota_rollout_bundle(
+        board=board,
+        artifact=artifact_path,
+        host=host,
+        destination=destination,
+        rollout=rollout or default_rollout_policy(),
+        rollback_artifact=rollback_artifact,
+    )
     return {
         "deployment_id": deployment_id,
         "operation": "ota",
@@ -177,6 +185,7 @@ def build_ota_plan(
         "artifact_sha256": validation["sha256"],
         "artifact_size": validation["size_bytes"],
         "artifact_manifest": build_artifact_manifest(artifact_path),
+        "rollout_bundle": rollout_bundle,
         "host": host,
         "command": command,
         "rollout": rollout or default_rollout_policy(),
@@ -209,6 +218,16 @@ def execute_plan(plan: dict[str, Any], timeout: int = 300) -> dict[str, Any]:
         plan["stderr"] = "Artifact checksum mismatch."
         plan["status"] = "failed_preflight"
         return plan
+    if plan["operation"] == "ota":
+        verification = verify_ota_rollout_bundle(plan.get("rollout_bundle", {}))
+        plan["rollout_verified"] = verification["verified"]
+        if not verification["verified"]:
+            plan["executed"] = False
+            plan["returncode"] = None
+            plan["stdout"] = ""
+            plan["stderr"] = verification["reason"]
+            plan["status"] = "failed_preflight"
+            return plan
 
     completed = subprocess.run(plan["command"], capture_output=True, text=True, timeout=timeout, check=False)
     plan["executed"] = True
@@ -255,6 +274,50 @@ def build_artifact_manifest(path: Path) -> dict[str, Any]:
 def verify_artifact_manifest(manifest: dict[str, Any]) -> bool:
     expected = sign_artifact_digest(manifest["sha256"])
     return hmac.compare_digest(expected, manifest["signature"])
+
+
+def build_ota_rollout_bundle(
+    *,
+    board: str,
+    artifact: Path,
+    host: str,
+    destination: str,
+    rollout: dict[str, Any],
+    rollback_artifact: str | None,
+) -> dict[str, Any]:
+    manifest = build_artifact_manifest(artifact)
+    payload = {
+        "board": board,
+        "artifact": manifest["artifact"],
+        "artifact_sha256": manifest["sha256"],
+        "host": host,
+        "destination": destination,
+        "rollout": rollout,
+        "rollback_artifact": rollback_artifact,
+        "channel": rollout.get("channel", "stable"),
+    }
+    signed_body = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    signature = sign_artifact_digest(hashlib.sha256(signed_body.encode("utf-8")).hexdigest())
+    return {
+        "payload": payload,
+        "manifest": manifest,
+        "signature": signature,
+        "signature_algorithm": "hmac-sha256",
+    }
+
+
+def verify_ota_rollout_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
+    if not bundle or "payload" not in bundle or "manifest" not in bundle:
+        return {"verified": False, "reason": "Missing OTA rollout bundle"}
+    if not verify_artifact_manifest(bundle["manifest"]):
+        return {"verified": False, "reason": "Artifact manifest signature mismatch"}
+    signed_body = json.dumps(bundle["payload"], sort_keys=True, separators=(",", ":"))
+    expected = sign_artifact_digest(hashlib.sha256(signed_body.encode("utf-8")).hexdigest())
+    if not hmac.compare_digest(expected, bundle.get("signature", "")):
+        return {"verified": False, "reason": "OTA rollout signature mismatch"}
+    if bundle["payload"].get("artifact_sha256") != bundle["manifest"].get("sha256"):
+        return {"verified": False, "reason": "OTA payload digest mismatch"}
+    return {"verified": True, "reason": "ok"}
 
 
 def sign_artifact_digest(digest: str) -> str:

@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import json
 import os
+import socket
+import threading
 import tempfile
 import unittest
 from pathlib import Path
 
 from iotron.ai import build_project_plan
 from iotron.api import app, dashboard
+from iotron.oidc import issue_external_test_token
 from iotron.security import issue_device_token, issue_operator_token, security_metadata, verify_token
 from iotron.service import IoTronService
 from iotron.storage import CONFIG_PATH, PACKAGE_DB_PATH, RUNTIME_STATE_PATH, SQLITE_DB_PATH
-from iotron.toolchains import build_artifact_manifest, validate_artifact, verify_artifact_manifest
+from iotron.toolchains import build_artifact_manifest, build_ota_plan, validate_artifact, verify_artifact_manifest, verify_ota_rollout_bundle
 
 
 class IoTronServiceTests(unittest.TestCase):
@@ -43,10 +46,16 @@ class IoTronServiceTests(unittest.TestCase):
         if SQLITE_DB_PATH.exists():
             SQLITE_DB_PATH.unlink()
         os.environ["IOTRON_BEARER_SECRET"] = "test-secret"
+        os.environ["IOTRON_OIDC_SHARED_SECRET"] = "oidc-secret"
+        os.environ["IOTRON_OIDC_ISSUER"] = "https://idp.example.test"
+        os.environ["IOTRON_OIDC_AUDIENCE"] = "iotron"
         self.service = IoTronService()
 
     def tearDown(self) -> None:
         os.environ.pop("IOTRON_BEARER_SECRET", None)
+        os.environ.pop("IOTRON_OIDC_SHARED_SECRET", None)
+        os.environ.pop("IOTRON_OIDC_ISSUER", None)
+        os.environ.pop("IOTRON_OIDC_AUDIENCE", None)
 
     def test_install_package_persists(self) -> None:
         package = self.service.install_package("mqtt-broker", version="1.0.0")
@@ -118,6 +127,17 @@ class IoTronServiceTests(unittest.TestCase):
         self.assertTrue(verify_artifact_manifest(manifest))
         self.assertTrue(validation["verified"])
 
+    def test_ota_rollout_bundle_is_verified(self) -> None:
+        with tempfile.NamedTemporaryFile(delete=False) as handle:
+            handle.write(b"signed-ota-artifact")
+            artifact = handle.name
+        try:
+            plan = build_ota_plan("jetson-nano", artifact, host="edge.local")
+        finally:
+            Path(artifact).unlink(missing_ok=True)
+        verification = verify_ota_rollout_bundle(plan["rollout_bundle"])
+        self.assertTrue(verification["verified"])
+
     def test_backend_overview_and_audit(self) -> None:
         self.service.register_device("sensor-1", "esp32", protocol="i2c", network="mqtt", actor="admin")
         self.service.install_package("telemetry-pipeline", actor="admin")
@@ -172,6 +192,47 @@ class IoTronServiceTests(unittest.TestCase):
         self.assertIn("rbac_policies", metadata)
         self.assertIn("secret_sources", security_metadata())
 
+    def test_external_identity_exchange(self) -> None:
+        token = issue_external_test_token("operator@example.com", role="operator", tenant_id="tenant-a")
+        identity = self.service.exchange_external_identity(token, actor="test")
+        self.assertEqual(identity["sub"], "operator@example.com")
+        self.assertEqual(identity["role"], "operator")
+        self.assertEqual(identity["tenant_id"], "tenant-a")
+
+    def test_protocol_exchange_over_tcp(self) -> None:
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        host, port = server.getsockname()
+
+        def serve_once() -> None:
+            connection, _ = server.accept()
+            with connection:
+                data = connection.recv(1024)
+                connection.sendall(b"echo:" + data)
+            server.close()
+
+        thread = threading.Thread(target=serve_once, daemon=True)
+        thread.start()
+        result = self.service.protocol_exchange("tcp", f"{host}:{port}", "publish", {"raw": "hello"}, actor="admin")
+        thread.join(timeout=2)
+        self.assertEqual(result["protocol"], "tcp")
+        self.assertIn("echo:", result["response_text"])
+
+    def test_worker_metadata_and_job_queue(self) -> None:
+        os.environ["IOTRON_WORKER_BACKEND"] = "sqlite"
+        try:
+            job = self.service.schedule_hardware_validation("esp32", __file__, port="COM5", actor="admin")
+            metadata = self.service.worker_metadata()
+            claimed = self.service.claim_job("worker-a")
+            self.assertEqual(metadata["backend"], "sqlite")
+            self.assertEqual(job["backend"], "sqlite")
+            self.assertIsNotNone(claimed)
+            completed = self.service.complete_job(claimed["job_id"], result={"ok": True})
+            self.assertEqual(completed["status"], "completed")
+        finally:
+            os.environ.pop("IOTRON_WORKER_BACKEND", None)
+
     def test_hardware_validation_and_dispatch(self) -> None:
         with tempfile.NamedTemporaryFile(delete=False) as handle:
             handle.write(b"firmware-binary")
@@ -201,6 +262,7 @@ class IoTronServiceTests(unittest.TestCase):
         self.assertIn("/native/manifest", routes)
         self.assertIn("/auth/token", routes)
         self.assertIn("/auth/revoke", routes)
+        self.assertIn("/auth/exchange-external", routes)
         self.assertIn("/audit", routes)
         self.assertIn("/metrics", routes)
         self.assertIn("/traces", routes)
@@ -209,9 +271,15 @@ class IoTronServiceTests(unittest.TestCase):
         self.assertIn("/backups", routes)
         self.assertIn("/dr/plan", routes)
         self.assertIn("/security/metadata", routes)
+        self.assertIn("/identity/discovery", routes)
+        self.assertIn("/protocols/capabilities", routes)
+        self.assertIn("/protocols/exchange", routes)
         self.assertIn("/tenants", routes)
         self.assertIn("/rbac/policies", routes)
         self.assertIn("/notifications/channels", routes)
+        self.assertIn("/workers/metadata", routes)
+        self.assertIn("/workers/claim", routes)
+        self.assertIn("/jobs/{job_id}/complete", routes)
         self.assertIn("/project/hardware-validate", routes)
 
 
